@@ -46,7 +46,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-# ── Verdict constants ───────────────────────────────────────────────────────
+# -- Verdict constants -------------------------------------------------------
 VERIFIED = "verified"
 INFERRED = "inferred"
 HEURISTIC = "heuristic"
@@ -82,7 +82,7 @@ def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-# ── Optional per-site confidence enrichment (pluggable seam) ────────────────
+# -- Optional per-site confidence enrichment (pluggable seam) ----------------
 #
 # These two hooks are *extension points*, not part of the core trust logic.
 # The shipped defaults are no-ops: the trust envelope falls back to its static
@@ -174,7 +174,7 @@ def envelope(result: Any, trust: dict[str, Any]) -> dict[str, Any]:
     return {"result": result, "trust": trust}
 
 
-# ── Per-adapter wrappers ────────────────────────────────────────────────────
+# -- Per-adapter wrappers ----------------------------------------------------
 #
 # Each wrapper takes the raw adapter output and returns the standard envelope.
 # These encode the honest trust verdict for that particular source.
@@ -186,7 +186,7 @@ CORROBORATION_MAX_TOTAL_BOOST = 0.25
 CORROBORATION_CONTRADICTION_HIST_FLOOR = 0.30
 
 
-# ── Deployment contexts ────────────────────────────────────────────────────
+# -- Deployment contexts ----------------------------------------------------
 #
 # Different operational settings tolerate different amounts of false-positive
 # risk. A hobbyist ('casual') wants permissive results; a compliance or
@@ -226,7 +226,7 @@ def _resolve_context(name: str | None) -> dict[str, Any]:
     return _CONTEXT_PROFILES.get(name or "default", _CONTEXT_PROFILES["default"])
 
 
-# ── Cross-scan identity corroboration ──────────────────────────────────────
+# -- Cross-scan identity corroboration --------------------------------------
 #
 # Given multiple username scan envelopes, detect pairs that share enough
 # independent platforms to suggest they belong to the same identity.
@@ -305,7 +305,7 @@ def corroborate_identities(
                 })
                 entry["reasoning"].append(
                     f"Shares {len(shared)} platform(s) with '{b}' "
-                    f"(≥{min_shared_platforms}) — likely same identity."
+                    f"(>={min_shared_platforms}) - likely same identity."
                 )
                 entry["boost"] = round(min(max_boost, entry["boost"] + boost_per_link), 3)
 
@@ -337,6 +337,8 @@ def wrap_username_scan(
           confidence is below ``STRICT_MODE_MIN_CONFIDENCE`` and records
           how many were filtered.
     """
+    if not isinstance(raw, dict):
+        raw = {}
     warnings: list[str] = []
     reasoning: list[str] = []
     context_profile = _resolve_context(context)
@@ -349,14 +351,14 @@ def wrap_username_scan(
 
     # The caller passes the raw username-scan dict:
     # {sites_checked, sites_found, results: [...]}.
-    raw_results = list(raw.get("results", []) or [])
+    raw_results = [r for r in (raw.get("results") or []) if isinstance(r, dict)]
     err_count = sum(1 for r in raw_results if r.get("status") == "error")
     parking_hits = sum(
         1 for r in raw_results
         if r.get("status") == "not_found" and "parking" in str(r.get("message", "")).lower()
     )
 
-    # ── Per-site confidence enrichment ──────────────────────────────────────
+    # -- Per-site confidence enrichment --------------------------------------
     site_confs = _get_site_confidences(username) if username else {}
     enriched: list[dict[str, Any]] = []
     anomalies: list[dict[str, Any]] = []
@@ -375,7 +377,7 @@ def wrap_username_scan(
                     anomalies.append({"site": site, **anomaly})
         enriched.append(rr)
 
-    # ── Strict mode filter (only on the "found" subset) ─────────────────────
+    # -- Strict mode filter (only on the "found" subset) ---------------------
     filtered_low_conf = 0
     if strict and site_confs:
         new_results: list[dict[str, Any]] = []
@@ -395,18 +397,18 @@ def wrap_username_scan(
     if checked_after == 0:
         verdict, conf = UNVERIFIED, 0.05
         warnings.append("no_sites_checked")
-        reasoning.append("No sites reached — cannot form any verdict.")
+        reasoning.append("No sites reached - cannot form any verdict.")
     elif err_count > checked_after * 0.5:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("majority_sites_errored")
         reasoning.append(
-            f"{err_count}/{checked_after} sites errored — majority failure invalidates the scan."
+            f"{err_count}/{checked_after} sites errored - majority failure invalidates the scan."
         )
     elif found_after == 0:
         verdict, conf = INFERRED, 0.60
         warnings.append("no_hits_but_sites_responded")
         reasoning.append(
-            f"{checked_after} sites responded cleanly, zero hits — strong negative signal."
+            f"{checked_after} sites responded cleanly, zero hits - strong negative signal."
         )
         if parking_hits > 0:
             reasoning.append(
@@ -425,7 +427,7 @@ def wrap_username_scan(
         warnings.append("http_status_based_detection")
         warnings.append("verify_hits_manually")
         reasoning.append(
-            f"{found_after}/{checked_after} sites returned the expected status — baseline heuristic hit."
+            f"{found_after}/{checked_after} sites returned the expected status - baseline heuristic hit."
         )
         if parking_hits > 0:
             reasoning.append(
@@ -455,7 +457,7 @@ def wrap_username_scan(
                 warnings.append("history_backed_inference")
                 reasoning.append("Promoted to 'inferred' on strong historical track record.")
 
-        # ── Cross-adapter corroboration ─────────────────────────────────────
+        # -- Cross-adapter corroboration -------------------------------------
         # Boost trust when independent signals agree. Contradictions (many
         # hits from historically-unreliable sites) halve the boost and raise
         # a dedicated warning so operators can spot the pattern.
@@ -464,14 +466,14 @@ def wrap_username_scan(
             corroboration_boost += platform_boost_amount
             warnings.append(f"corroboration:{found_after}_platforms")
             reasoning.append(
-                f"Hit on {found_after} independent platforms (≥{platform_boost_threshold}) → "
+                f"Hit on {found_after} independent platforms (>={platform_boost_threshold}) -> "
                 f"+{platform_boost_amount:.2f} corroboration boost."
             )
         if corroborating_email and found_after > 0:
             corroboration_boost += email_match_boost
             warnings.append("corroboration:email_username_co_occurrence")
             reasoning.append(
-                f"Co-occurring email '{corroborating_email}' supplied by caller → "
+                f"Co-occurring email '{corroborating_email}' supplied by caller -> "
                 f"+{email_match_boost:.2f} identity corroboration."
             )
 
@@ -483,7 +485,7 @@ def wrap_username_scan(
                 warnings.append("contradiction:many_hits_low_site_reliability")
                 reasoning.append(
                     f"Contradiction: {found_after} hits but average site reliability "
-                    f"{avg_hc:.2f} < {CORROBORATION_CONTRADICTION_HIST_FLOOR:.2f} — boost halved."
+                    f"{avg_hc:.2f} < {CORROBORATION_CONTRADICTION_HIST_FLOOR:.2f} - boost halved."
                 )
                 corroboration_boost *= 0.5
 
@@ -497,8 +499,8 @@ def wrap_username_scan(
                 verdict = INFERRED
                 warnings.append("cross_adapter_corroboration_promotion")
                 reasoning.append(
-                    f"Promoted heuristic → inferred on strong cross-adapter agreement "
-                    f"(boost {corroboration_boost:.2f} ≥ context floor {promotion_boost_min:.2f})."
+                    f"Promoted heuristic -> inferred on strong cross-adapter agreement "
+                    f"(boost {corroboration_boost:.2f} >= context floor {promotion_boost_min:.2f})."
                 )
 
     if err_count > 0:
@@ -512,10 +514,16 @@ def wrap_username_scan(
     if conf > confidence_cap:
         warnings.append(f"context_cap:{confidence_cap:.2f}")
         reasoning.append(
-            f"Confidence clamped from {conf:.2f} → {confidence_cap:.2f} "
+            f"Confidence clamped from {conf:.2f} -> {confidence_cap:.2f} "
             f"by context '{context or 'default'}'."
         )
         conf = confidence_cap
+    # Keep 'inferred' within its documented confidence band (<= 0.80) even when
+    # a permissive context cap would allow more: 404-derived corroboration never
+    # earns verified-tier confidence. The verdict ceiling itself is unchanged.
+    if verdict == INFERRED and conf > 0.80:
+        warnings.append("inferred_band_cap:0.80")
+        conf = 0.80
     if anomalies:
         high = [a for a in anomalies if a.get("direction") == "high"]
         low = [a for a in anomalies if a.get("direction") == "low"]
@@ -523,12 +531,12 @@ def wrap_username_scan(
         if high:
             reasoning.append(
                 f"{len(high)} hit(s) have unusually HIGH historical confidence "
-                f"(≥3σ above site mean) — possible poisoning or unique track record."
+                f"(>=3sigma above site mean) - possible poisoning or unique track record."
             )
         if low:
             reasoning.append(
                 f"{len(low)} hit(s) have unusually LOW historical confidence "
-                f"(≤3σ below site mean) — treat with extra skepticism."
+                f"(<=3sigma below site mean) - treat with extra skepticism."
             )
 
     # The envelope still preserves the original raw counts for legacy clients
@@ -588,6 +596,8 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
         * SPF/DMARC tell us how the domain wants to be handled, not who
           owns the address.
     """
+    if not isinstance(raw, dict):
+        raw = {}
     validation = raw.get("validation", {}) or {}
     format_valid = bool(validation.get("format_valid"))
     mx_reachable = bool(validation.get("mx_reachable"))
@@ -615,7 +625,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
         "aliases_and_forwarders_invisible",
     ]
 
-    # ── Bad format ─────────────────────────────────────────────────────────
+    # -- Bad format ---------------------------------------------------------
     if not format_valid:
         errors.append("invalid_email_format")
         return envelope(
@@ -635,7 +645,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
             ),
         )
 
-    # ── Climb the ladder ───────────────────────────────────────────────────
+    # -- Climb the ladder ---------------------------------------------------
     verdict, conf = HEURISTIC, 0.30
 
     if mx_reachable:
@@ -660,7 +670,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         warnings.append("mx_lookup_failed_or_unreachable")
 
-    # ── Conditional warnings ───────────────────────────────────────────────
+    # -- Conditional warnings -----------------------------------------------
     if disposable:
         warnings.append("disposable_provider")
     if is_role:
@@ -723,6 +733,8 @@ def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
         * Messenger presence proves the number is REACHABLE, not who owns it.
         * Numverify gives a *current* carrier but cannot prove identity.
     """
+    if not isinstance(raw, dict):
+        raw = {}
     parsed = raw.get("parsed", {}) or {}
     valid_format = bool(parsed.get("valid"))
     enrichment_source = parsed.get("enrichment_source") or "regex"
@@ -763,7 +775,7 @@ def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
         warnings.append("parsed_via_regex_fallback")
         warnings.append("install_phonenumbers_for_better_data")
 
-    # ── Messenger presence boost ───────────────────────────────────────────
+    # -- Messenger presence boost -------------------------------------------
     # WhatsApp/Telegram presence is a strong "reachable + active" signal even
     # though it doesn't reveal identity. We weigh both checks and use the
     # cumulative hit count to bump the verdict.
@@ -786,7 +798,7 @@ def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
             conf = max(conf, 0.74)
         warnings.append(f"messenger_presence_hits={hit_count}")
 
-    # ── Optional Numverify (paid API) bump ─────────────────────────────────
+    # -- Optional Numverify (paid API) bump ---------------------------------
     # If a NUMVERIFY_API_KEY is present and the call succeeded, the result
     # has a *current* carrier rather than the prefix's original allocation.
     # We still cap below the verified threshold because Numverify themselves
@@ -856,6 +868,8 @@ def wrap_ip(raw: dict[str, Any]) -> dict[str, Any]:
       + DNSBL listed                          → adds warning, no boost
       + ASN classified (cloud/host/mobile/...)→ adds context, no boost
     """
+    if not isinstance(raw, dict):
+        raw = {}
     geo = raw.get("geolocation", {}) or {}
     rdap = raw.get("rdap", {}) or {}
     rdns = raw.get("reverse_dns", {}) or {}
@@ -971,6 +985,8 @@ def wrap_domain(raw: dict[str, Any]) -> dict[str, Any]:
       tls_legacy_protocol, tls_weak_cipher, ssl_san_mismatch,
       ssl_self_signed
     """
+    if not isinstance(raw, dict):
+        raw = {}
     rdap = raw.get("rdap", {}) or {}
     ssl = raw.get("ssl", {}) or {}
     http = raw.get("http", {}) or {}
@@ -1121,6 +1137,8 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     """Breach check: password HIBP is verified (k-anonymity), email HIBP
     requires a paid API key.
     """
+    if not isinstance(raw, dict):
+        raw = {}
     pw_check = raw.get("password_check") or {}
     em_check = raw.get("email_check") or {}
 
@@ -1179,6 +1197,8 @@ def wrap_avatar(raw: dict[str, Any]) -> dict[str, Any]:
     """Avatar OSINT: real HTTP but 'profile picture exists' != 'owned by
     target'. Always at most inferred.
     """
+    if not isinstance(raw, dict):
+        raw = {}
     results = raw.get("results") or raw.get("platforms") or []
     found_any = False
     if isinstance(results, list):
@@ -1212,6 +1232,8 @@ def wrap_avatar(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
     """Company OSINT: GitHub org is real API, social checks are 404-based."""
+    if not isinstance(raw, dict):
+        raw = {}
     github = raw.get("github", {}) or raw.get("github_org", {}) or {}
     gh_found = bool(github.get("found") or github.get("login"))
 
@@ -1244,6 +1266,8 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_name(raw: dict[str, Any]) -> dict[str, Any]:
     """Name OSINT is a pure generator. No network calls."""
+    if not isinstance(raw, dict):
+        raw = {}
     return envelope(
         raw,
         build_trust(
@@ -1261,6 +1285,8 @@ def wrap_name(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
     """WHOIS (RDAP) is real API."""
+    if not isinstance(raw, dict):
+        raw = {}
     found = bool(raw.get("found") or raw.get("registrar"))
     if found:
         return envelope(
@@ -1286,6 +1312,8 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
     """SSL certificate inspection is real socket handshake."""
+    if not isinstance(raw, dict):
+        raw = {}
     has_ssl = bool(raw.get("has_ssl") or raw.get("certificate"))
     if has_ssl:
         return envelope(
@@ -1311,6 +1339,8 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
     """Paste/leak search: GitHub API + grep.app real, Google scrape fragile."""
+    if not isinstance(raw, dict):
+        raw = {}
     hits = raw.get("results") or raw.get("hits") or []
     count = len(hits) if isinstance(hits, list) else 0
 
@@ -1338,6 +1368,8 @@ def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
 
 def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     """Metadata extraction is local, deterministic, authoritative."""
+    if not isinstance(raw, dict):
+        raw = {}
     has_data = bool(raw) and not raw.get("error")
     if has_data:
         return envelope(
@@ -1387,6 +1419,8 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
     verdict across its sub-modules (a pipeline is only as trustworthy as
     its weakest link).
     """
+    if not isinstance(raw, dict):
+        raw = {}
     mods = raw.get("modules", {}) or {}
     sub_verdicts: list[str] = []
 

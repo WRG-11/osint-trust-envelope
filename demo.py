@@ -6,12 +6,19 @@ verdict each source type is allowed to reach. Run with::
 
     python demo.py
 
-No network calls, no dependencies — the raw inputs below are illustrative
+No network calls, no dependencies - the raw inputs below are illustrative
 fixtures, exactly the shape your own adapters would produce.
 """
 from __future__ import annotations
 
-from osint_trust_envelope import (
+import pathlib
+import sys
+
+# Allow `python demo.py` from a fresh clone without installing the package:
+# put the local src/ layout on sys.path before importing.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
+
+from osint_trust_envelope import (  # noqa: E402
     wrap_breach,
     wrap_domain,
     wrap_email,
@@ -37,13 +44,13 @@ def _show(title: str, env: dict) -> None:
 
 def main() -> None:
     print("=" * 68)
-    print("osint-trust-envelope — verdict ladder demo")
+    print("osint-trust-envelope - verdict ladder demo")
     print("Each source type is capped at the trust level it can honestly reach.")
     print("=" * 68)
 
     # 1. Phone with one messenger hit. Structurally capped at 'inferred'.
     _show(
-        "[1] Phone (+1, libphonenumber, 1 WhatsApp hit) — capped at inferred",
+        "[1] Phone (+1, libphonenumber, 1 WhatsApp hit) - capped at inferred",
         wrap_phone({
             "parsed": {
                 "valid": True,
@@ -56,7 +63,7 @@ def main() -> None:
 
     # 2. Email with strong DMARC + provider. Still cannot exceed 'inferred'.
     _show(
-        "[2] Email (MX + Google Workspace + DMARC reject) — capped at inferred",
+        "[2] Email (MX + Google Workspace + DMARC reject) - capped at inferred",
         wrap_email({
             "validation": {
                 "format_valid": True,
@@ -70,7 +77,7 @@ def main() -> None:
 
     # 3. Username scan, 2 hits, no history. Fragile 404 detection -> heuristic.
     _show(
-        "[3] Username scan (2 hits / 10 sites, no history) — heuristic",
+        "[3] Username scan (2 hits / 10 sites, no history) - heuristic",
         wrap_username_scan({
             "sites_checked": 10,
             "sites_found": 2,
@@ -81,7 +88,7 @@ def main() -> None:
     # 4. Username scan, 4 independent platforms -> cross-adapter corroboration
     #    promotes heuristic -> inferred.
     _show(
-        "[4] Username scan (4 independent platforms) — promoted to inferred",
+        "[4] Username scan (4 independent platforms) - promoted to inferred",
         wrap_username_scan({
             "sites_checked": 10,
             "sites_found": 4,
@@ -92,7 +99,7 @@ def main() -> None:
 
     # 5. Domain with all four authoritative sources -> verified (still capped).
     _show(
-        "[5] Domain (DNS + RDAP + SSL + HTTP) — verified, capped at 0.96",
+        "[5] Domain (DNS + RDAP + SSL + HTTP) - verified, capped at 0.96",
         wrap_domain({
             "dns": {"a_records": ["1.2.3.4"]},
             "rdap": {"found": True},
@@ -103,7 +110,7 @@ def main() -> None:
 
     # 6. Breach: HIBP k-anonymity password check is cryptographically real.
     _show(
-        "[6] Breach (HIBP password k-anonymity) — verified",
+        "[6] Breach (HIBP password k-anonymity) - verified",
         wrap_breach({
             "password_check": {"checked": True, "breached": False},
             "email_check": None,
@@ -112,7 +119,7 @@ def main() -> None:
 
     print("\n" + "=" * 68)
     print("Note: phone/email/username can never reach 'verified' from these")
-    print("signals — that ceiling is enforced in code, not by convention.")
+    print("signals - that ceiling is enforced in code, not by convention.")
     print("=" * 68)
 
 
