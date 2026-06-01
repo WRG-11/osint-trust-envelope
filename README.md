@@ -1,16 +1,16 @@
 # osint-trust-envelope
 
-**Per-source-type epistemic ceilings for OSINT results — anti-overclaim as code.**
+**Per-source-type epistemic ceilings for OSINT results - anti-overclaim as code.**
 
 OSINT tooling loves to render a green checkmark. A username "found" on 40 sites,
-a phone number "traced" to a carrier, an email "confirmed" — all presented with
+a phone number "traced" to a carrier, an email "confirmed" - all presented with
 the same confident UI as a cryptographically real breach hit. The problem is
 that most OSINT signals *cannot* support that confidence, and the uncertainty
 usually lives only in a human analyst's head (or a footnote nobody reads).
 
 This package moves that uncertainty into the type system of the result. Every
 lookup is wrapped in a `{"result": ..., "trust": ...}` envelope whose **verdict
-is capped at the highest level the source _type_ can honestly support** — and
+is capped at the highest level the source _type_ can honestly support** - and
 that cap is written into the code, not left to caller discipline.
 
 ```python
@@ -38,18 +38,18 @@ Four levels, most trustworthy to least:
 
 | Verdict | Meaning | Confidence band |
 | --- | --- | --- |
-| `verified` | A real, authoritative source confirmed it (HIBP k-anonymity, an RDAP/DNS resolve, EXIF parsed from a local file). | 0.85 – 1.00 |
-| `inferred` | Real data was retrieved, but the interpretation is indirect (an MX record exists; an avatar URL returned 200). | 0.55 – 0.80 |
-| `heuristic` | Pattern/regex/404-scraping. False positives are expected. | 0.25 – 0.55 |
-| `unverified` | The check was attempted but nothing came back, or the input was malformed. The honest "we don't know". | 0.00 – 0.20 |
+| `verified` | A real, authoritative source confirmed it (HIBP k-anonymity, an RDAP/DNS resolve, EXIF parsed from a local file). | 0.85 - 1.00 |
+| `inferred` | Real data was retrieved, but the interpretation is indirect (an MX record exists; an avatar URL returned 200). | 0.55 - 0.80 |
+| `heuristic` | Pattern/regex/404-scraping. False positives are expected. | 0.25 - 0.55 |
+| `unverified` | The check was attempted but nothing came back, or the input was malformed. The honest "we don't know". | 0.00 - 0.20 |
 
-`confidence` is a separate 0–1 number that tracks the verdict but lets you
+`confidence` is a separate 0-1 number that tracks the verdict but lets you
 order results *within* a band.
 
 > Note on the word **`verified`**: it is a verdict *label* meaning "an
 > authoritative upstream source confirmed this", assigned from the raw data you
 > pass in. The library performs no network calls and makes no independent claim
-> about your data — it records the ceiling the source type allows.
+> about your data - it records the ceiling the source type allows.
 
 ---
 
@@ -60,20 +60,20 @@ concrete tradecraft reason the source type can't escape.
 
 | Wrapper | Max verdict | Why it can't go higher |
 | --- | --- | --- |
-| `wrap_phone` | **inferred** | Number portability (MNP) breaks prefix→carrier inference; messenger presence proves *reachability*, not ownership; a paid reverse-lookup gives a *current* carrier, never an identity. |
+| `wrap_phone` | **inferred** | Number portability (MNP) breaks prefix-to-carrier inference; messenger presence proves *reachability*, not ownership; a paid reverse-lookup gives a *current* carrier, never an identity. |
 | `wrap_email` | **inferred** | An MX record proves the domain accepts mail, not that *this* mailbox exists or is read; aliases, forwarders and catch-all rules are invisible from outside; SPF/DMARC describe handling policy, not ownership. |
-| `wrap_username_scan` | **heuristic** (→ inferred only with cross-platform corroboration or a historical track record) | HTTP-status / 404-based detection is structurally fragile — false positives are expected. Only independent agreement across enough platforms, or a per-site reliability history, earns a promotion. |
+| `wrap_username_scan` | **heuristic** (-> inferred only with cross-platform corroboration or a historical track record) | HTTP-status / 404-based detection is structurally fragile - false positives are expected. Only independent agreement across enough platforms, or a per-site reliability history, earns a promotion. |
 | `wrap_company` | **inferred** | A GitHub org is a real API hit, but the social-presence half is 404-scraped. |
 | `wrap_avatar` | **inferred** | "A profile image exists at this URL" is not "owned by the target"; correlation is probabilistic. |
 | `wrap_paste` | **inferred** | Hits require manual relevance review; the presence of a string is not attribution. |
-| `wrap_ip` | **verified** (≤ 0.92; ≤ 0.95 for a Tor exit) | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
-| `wrap_domain` | **verified** (≤ 0.96) | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
-| `wrap_breach` | **verified** (≤ 0.97) | The HIBP k-anonymity password check is cryptographically real; the email-breach path needs a paid key. |
+| `wrap_ip` | **verified** (<= 0.92; <= 0.95 for a Tor exit) | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
+| `wrap_domain` | **verified** (<= 0.96) | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
+| `wrap_breach` | **verified** (<= 0.97) | The HIBP k-anonymity password check is cryptographically real; the email-breach path needs a paid key. |
 | `wrap_whois` / `wrap_ssl` / `wrap_metadata` | **verified** | RDAP API, a TLS handshake, and a local binary parse are authoritative for what they measure (EXIF can still be spoofed or stripped). |
 | `wrap_pipeline` | **= weakest sub-module** | A pipeline is only as trustworthy as its least-trustworthy link. |
 
 Mandatory honesty disclaimers ride along in `trust.warnings` and are always
-present for the relevant source type — e.g. a phone result always carries
+present for the relevant source type - e.g. a phone result always carries
 `number_portability_not_reflected`; an email always carries
 `mailbox_existence_not_proven`; an IP always carries
 `ip_geolocation_is_isp_level_not_user_level`. They cannot be configured off.
@@ -96,7 +96,7 @@ Being honest about the tool is the same discipline the tool encodes:
   that touches identity caps below `verified` precisely because identity cannot
   be established from these signals.
 
-If you wire this into a product, surface the verdict and the warnings — not a
+If you wire this into a product, surface the verdict and the warnings - not a
 bare green checkmark.
 
 ---
@@ -150,4 +150,4 @@ pytest
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
