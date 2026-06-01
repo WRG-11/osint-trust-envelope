@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osint-trust-envelope"
+version = "0.1.0"
+description = "Per-source-type epistemic ceilings for OSINT results — anti-overclaim trust verdicts as code."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = [
+    "osint",
+    "trust",
+    "verdict",
+    "epistemics",
+    "confidence",
+    "anti-overclaim",
+    "threat-intel",
+]
+authors = [{ name = "WRG-11" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+# CORE IS ZERO-DEPENDENCY BY DESIGN. The entire value of this package is a
+# self-contained, stdlib-only trust layer. Do not add runtime dependencies.
+dependencies = []
+
+[project.optional-dependencies]
+# Test-only tooling. The library itself never imports these.
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/WRG-11/osint-trust-envelope"
+Source = "https://github.com/WRG-11/osint-trust-envelope"
+Issues = "https://github.com/WRG-11/osint-trust-envelope/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+osint_trust_envelope = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
