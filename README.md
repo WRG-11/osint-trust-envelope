@@ -1,5 +1,9 @@
 # osint-trust-envelope
 
+[![CI](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/codeql.yml)
+[![License](https://img.shields.io/github/license/WRG-11/osint-trust-envelope)](https://github.com/WRG-11/osint-trust-envelope/blob/main/LICENSE)
+
 **Per-source-type epistemic ceilings for OSINT results - anti-overclaim as code.**
 
 OSINT tooling loves to render a green checkmark. A username "found" on 40 sites,
