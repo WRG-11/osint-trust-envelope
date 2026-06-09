@@ -1,0 +1,24 @@
+# Coverage configuration for osint-trust-envelope.
+#
+# Standalone .coveragerc because pyproject.toml currently carries no
+# [tool.coverage.*] config. src-layout package, so the source root is "src"
+# (measuring "src/osint_trust_envelope" mis-reports the package as never
+# imported -> 0%).
+#
+# fail_under is intentionally conservative for a first pass; this is a small,
+# zero-dependency, fully-typed library with an existing test suite, so the
+# real number should land well above this. Ratchet it up once measured.
+
+[run]
+source = src
+branch = True
+
+[report]
+show_missing = True
+skip_covered = False
+fail_under = 80
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:
