@@ -4,11 +4,12 @@ All notable changes to `osint-trust-envelope` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Versioning note:** the current in-tree version is `0.1.0` (`pyproject.toml`).
-> There are no Git tags or GitHub releases yet, so the `[0.1.0]` entry below is
-> seeded from the repository history rather than from a tagged release.
+> **Versioning note:** the `[0.1.0]` entry below is seeded from the repository
+> history rather than from a tagged release.
 
 ## [Unreleased]
+
+## [0.1.1] - 2026-06-10
 
 Repository-hygiene and CI hardening after the initial `0.1.0` cut; no change to
 the public API or the trust-verdict logic.
