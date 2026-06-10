@@ -6,6 +6,10 @@
 
 **Per-source-type epistemic ceilings for OSINT results - anti-overclaim as code.**
 
+## Status
+
+Experimental — feature-complete and CI-tested with a zero-dependency core, but not yet published to PyPI, and the confidence anchors are hand-calibrated tradecraft heuristics rather than corpus-validated metrics (see [What this is not](#what-this-is-not)).
+
 OSINT tooling loves to render a green checkmark. A username "found" on 40 sites,
 a phone number "traced" to a carrier, an email "confirmed" - all presented with
 the same confident UI as a cryptographically real breach hit. The problem is
@@ -155,3 +159,12 @@ pytest
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+---
+
+## Part of the WRG-11 ecosystem
+
+- [wrg-mcp-server](https://github.com/WRG-11/wrg-mcp-server) — WRG tools as an MCP server
+- [arastirma-ussu](https://github.com/WRG-11/arastirma-ussu) — local-first AI research assistant
+
+Full index → [github.com/WRG-11](https://github.com/WRG-11)
