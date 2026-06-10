@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osint-trust-envelope"
-version = "0.1.0"
+version = "0.1.1"
 description = "Per-source-type epistemic ceilings for OSINT results — anti-overclaim trust verdicts as code."
 readme = "README.md"
 requires-python = ">=3.10"
