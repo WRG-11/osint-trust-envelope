@@ -164,7 +164,7 @@ MIT - see [LICENSE](LICENSE).
 
 ## Part of the WRG-11 ecosystem
 
-- [wrg-mcp-server](https://github.com/WRG-11/wrg-mcp-server) — WRG tools as an MCP server
-- [arastirma-ussu](https://github.com/WRG-11/arastirma-ussu) — local-first AI research assistant
+- [mcp-objauthz-lab](https://github.com/WRG-11/mcp-objauthz-lab) — vulnerable-by-design MCP server for learning BOLA/IDOR
+- [devguard-scan](https://github.com/WRG-11/devguard-scan) — 100% client-side secret scanner
 
 Full index → [github.com/WRG-11](https://github.com/WRG-11)
