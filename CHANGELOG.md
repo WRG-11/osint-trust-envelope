@@ -9,6 +9,23 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- README: "Used by" section documenting `wrg_project_osint` integration with
+  concrete examples of the zero-hit (clean-negative -> `inferred`) and
+  adapter-error (`sites_checked=0` -> `unverified`) conventions.
+- Tests: `test_adapter_error_convention_sites_checked_zero` — pins the
+  `sites_checked=0` / empty-results pattern as the canonical form for
+  signalling scanner failure, distinct from a clean-negative scan.
+- Tests: `test_rdap_only_is_inferred` in `TestDomainWrapper` — pins the
+  one-of-four-sources case (RDAP-only lookup) as `inferred 0.55`.
+
+### Changed
+
+- `wrap_username_scan` docstring: added explicit guidance on the two
+  no-result states (clean-negative vs adapter-error) that integrators
+  commonly conflate.
+
 ## [0.1.1] - 2026-06-10
 
 Repository-hygiene and CI hardening after the initial `0.1.0` cut; no change to

@@ -336,6 +336,15 @@ def wrap_username_scan(
         * if ``strict=True``, drops any "found" hit whose historical
           confidence is below ``STRICT_MODE_MIN_CONFIDENCE`` and records
           how many were filtered.
+
+    Two no-result states to distinguish:
+
+    * **Clean negative** (``sites_found=0``, N sites responded): yields
+      ``inferred`` 0.60. Absence of a handle across N real checks is
+      evidence the handle does not exist there.
+    * **Adapter error** (scanner could not run -- binary missing, timeout):
+      pass ``sites_checked=0`` with an empty ``results`` list. Yields
+      ``unverified`` -- the honest "no data" state, not a negative signal.
     """
     if not isinstance(raw, dict):
         raw = {}
