@@ -91,6 +91,18 @@ class TestUsernameScanWrapper:
         })
         assert env["trust"]["verdict"] == t.INFERRED
 
+    def test_adapter_error_convention_sites_checked_zero(self):
+        """Canonical pattern for 'scanner could not run' (timeout, binary missing).
+
+        Pass sites_checked=0 with an empty results list. This is distinct from
+        a clean-negative (sites_found=0 but sites DID respond), which yields
+        inferred. The zero-checked convention yields unverified -- the honest
+        'we have no data' state.
+        """
+        env = t.wrap_username_scan({"sites_checked": 0, "sites_found": 0, "results": []})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+        assert "no_sites_checked" in env["trust"]["warnings"]
+
     def test_extra_includes_site_counts(self):
         env = t.wrap_username_scan({
             "sites_checked": 10,
@@ -728,6 +740,22 @@ class TestDomainWrapper:
     def test_none_reachable_is_unverified(self):
         env = t.wrap_domain({"dns": {}, "rdap": {}, "ssl": {}, "http": {}})
         assert env["trust"]["verdict"] == t.UNVERIFIED
+
+    def test_rdap_only_is_inferred(self):
+        """Only RDAP responded (e.g. domain-age lookup with no DNS/SSL/HTTP check).
+
+        One of four authoritative sources is enough for inferred, not verified.
+        This is the typical input from a keyless RDAP-only lookup.
+        """
+        env = t.wrap_domain({
+            "rdap": {"found": True},
+            "dns": {},
+            "ssl": {"has_ssl": False},
+            "http": {"reachable": False},
+        })
+        assert env["trust"]["verdict"] == t.INFERRED
+        assert 0.50 <= env["trust"]["confidence"] <= 0.80
+        assert "only_one_source_responded" in env["trust"]["warnings"]
 
     # ── Tier-2 ──────────────────────────────────────────────────────────
 
