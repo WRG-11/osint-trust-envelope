@@ -70,7 +70,7 @@ concrete tradecraft reason the source type can't escape.
 | --- | --- | --- |
 | `wrap_phone` | **inferred** | Number portability (MNP) breaks prefix-to-carrier inference; messenger presence proves *reachability*, not ownership; a paid reverse-lookup gives a *current* carrier, never an identity. |
 | `wrap_email` | **inferred** | An MX record proves the domain accepts mail, not that *this* mailbox exists or is read; aliases, forwarders and catch-all rules are invisible from outside; SPF/DMARC describe handling policy, not ownership. |
-| `wrap_username_scan` | **heuristic** (-> inferred only with cross-platform corroboration or a historical track record) | HTTP-status / 404-based detection is structurally fragile - false positives are expected. Only independent agreement across enough platforms, or a per-site reliability history, earns a promotion. |
+| `wrap_username_scan` | **heuristic** (-> inferred with cross-platform corroboration, historical track record, or zero hits across N responsive sites) | HTTP-status / 404-based detection is structurally fragile - false positives are expected. Cross-platform agreement or a per-site reliability history earns a promotion. Zero hits across N sites that *responded* is a strong negative and yields `inferred 0.60`. |
 | `wrap_company` | **inferred** | A GitHub org is a real API hit, but the social-presence half is 404-scraped. |
 | `wrap_avatar` | **inferred** | "A profile image exists at this URL" is not "owned by the target"; correlation is probabilistic. |
 | `wrap_paste` | **inferred** | Hits require manual relevance review; the presence of a string is not attribution. |
@@ -106,6 +106,65 @@ Being honest about the tool is the same discipline the tool encodes:
 
 If you wire this into a product, surface the verdict and the warnings - not a
 bare green checkmark.
+
+---
+
+## Used by
+
+### `wrg_project_osint` — token-project OSINT aggregator
+
+[WinstonRedGuard monorepo](https://github.com/WRG-11) uses this library to
+wrap [maigret](https://github.com/soxoj/maigret) username-scan results and
+RDAP domain-age lookups before surfacing them to the CLI and cockpit.
+
+The integration produced two concrete observations:
+
+**Zero hits across N responsive sites is a strong negative (`inferred`, not `unverified`)**
+
+When a scanner checks 100 sites and finds zero hits, and those sites all
+responded cleanly, that is evidence of absence — not missing data. The library
+returns `inferred 0.60`:
+
+```python
+from osint_trust_envelope import wrap_username_scan
+
+env = wrap_username_scan({
+    "sites_checked": 100,
+    "sites_found": 0,
+    "results": [{"status": "not_found"}] * 100,
+})
+env["trust"]["verdict"]     # "inferred"   (100 sites responded; absence is evidence)
+env["trust"]["confidence"]  # 0.60
+```
+
+If the scanner could not run at all (binary missing, subprocess timeout),
+signal adapter failure with `sites_checked=0` and an empty results list.
+This yields `unverified` — the honest "no data" state, distinct from a
+negative signal:
+
+```python
+env = wrap_username_scan({"sites_checked": 0, "sites_found": 0, "results": []})
+env["trust"]["verdict"]     # "unverified"  (no data collected)
+```
+
+**RDAP-only domain lookup yields `inferred`, not `verified`**
+
+A keyless RDAP lookup gives one of four authoritative signals (DNS, RDAP,
+SSL, HTTP). One signal is enough for `inferred 0.55` but not `verified`:
+
+```python
+from osint_trust_envelope import wrap_domain
+
+env = wrap_domain({
+    "rdap": {"found": True},
+    "dns": {},
+    "ssl": {"has_ssl": False},
+    "http": {"reachable": False},
+})
+env["trust"]["verdict"]    # "inferred"   (one source; not verified)
+env["trust"]["confidence"] # 0.55
+env["trust"]["warnings"]   # ["only_one_source_responded", ...]
+```
 
 ---
 
