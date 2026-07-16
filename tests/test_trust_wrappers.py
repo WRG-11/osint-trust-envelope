@@ -1094,6 +1094,35 @@ class TestBreachWrapper:
         assert env["trust"]["verdict"] == t.UNVERIFIED
         assert len(env["trust"]["errors"]) >= 1
 
+    def test_password_ok_email_errored_stays_verified_and_surfaces_error(self):
+        """Regression: an email_check that was ATTEMPTED but errored (not
+        skipped, not ok) must not be confused with 'no email data at all'
+        in a way that silently downgrades a genuinely verified password
+        check. Before the fix this fell through to the catch-all INFERRED
+        0.55 branch and dropped the email error entirely."""
+        env = t.wrap_breach({
+            "password_check": {"checked": True, "breached": False},
+            "email_check": {"checked": False, "error": "hibp_v3_timeout"},
+        })
+        assert env["trust"]["verdict"] == t.VERIFIED
+        assert env["trust"]["confidence"] == 0.90
+        assert "email_check_error: hibp_v3_timeout" in env["trust"]["errors"]
+
+    def test_password_ok_email_errored_matches_no_email_check_confidence(self):
+        """The errored-email and no-email-at-all states must land on the
+        same confidence — an inconclusive email attempt carries no less
+        (and no more) information than not attempting one."""
+        no_email = t.wrap_breach({
+            "password_check": {"checked": True, "breached": False},
+            "email_check": None,
+        })
+        errored_email = t.wrap_breach({
+            "password_check": {"checked": True, "breached": False},
+            "email_check": {"checked": False, "error": "rate_limited"},
+        })
+        assert no_email["trust"]["confidence"] == errored_email["trust"]["confidence"]
+        assert no_email["trust"]["verdict"] == errored_email["trust"]["verdict"] == t.VERIFIED
+
 
 class TestPipelineWrapper:
     def test_pipeline_verdict_equals_weakest_submodule(self):
@@ -1127,9 +1156,142 @@ class TestPipelineWrapper:
         })
         assert env["trust"]["extra"]["sub_verdicts"] == [t.VERIFIED]
 
+    def test_confidence_reflects_the_weak_links_actual_score_not_a_static_anchor(self):
+        """Regression: two pipelines with the same weakest verdict tier but
+        different underlying confidence for that weak sub-module must NOT
+        collapse to the same static anchor value."""
+        strong_weak_link = t.wrap_pipeline({
+            "modules": {
+                "ip": {
+                    "geolocation": {"found": True}, "rdap": {"found": True},
+                    "reverse_dns": {"hostname": "a.b"},
+                },
+                "email": {  # inferred, top of its band (full chain -> 0.84)
+                    "validation": {
+                        "format_valid": True, "mx_reachable": True,
+                        "mx_provider": "Google Workspace",
+                        "dmarc": {"present": True, "policy": "reject"},
+                    },
+                    "services_found": 2,
+                },
+            },
+        })
+        weaker_weak_link = t.wrap_pipeline({
+            "modules": {
+                "ip": {
+                    "geolocation": {"found": True}, "rdap": {"found": True},
+                    "reverse_dns": {"hostname": "a.b"},
+                },
+                "email": {  # inferred, bottom of its band (dmarc=none -> 0.60)
+                    "validation": {
+                        "format_valid": True, "mx_reachable": True,
+                        "mx_provider": "Google Workspace",
+                        "dmarc": {"present": True, "policy": "none"},
+                    },
+                },
+            },
+        })
+        assert strong_weak_link["trust"]["verdict"] == t.INFERRED
+        assert weaker_weak_link["trust"]["verdict"] == t.INFERRED
+        assert strong_weak_link["trust"]["confidence"] > weaker_weak_link["trust"]["confidence"]
+        assert strong_weak_link["trust"]["confidence"] == 0.84
+        assert weaker_weak_link["trust"]["confidence"] == 0.60
+
+    def test_unknown_module_name_defaults_to_unverified_confidence(self):
+        env = t.wrap_pipeline({"modules": {"some_future_module": {"anything": True}}})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+        assert env["trust"]["confidence"] == t._CONF_ANCHOR[t.UNVERIFIED]
+
 
 class TestNameWrapper:
     def test_name_is_heuristic_generator(self):
         env = t.wrap_name({"username_candidates": ["jdoe", "john.doe"]})
         assert env["trust"]["verdict"] == t.HEURISTIC
         assert "feed_to_username_scan_for_verification" in env["trust"]["warnings"]
+
+
+class TestContextCapExtendedToOtherWrappers:
+    """The deployment-context confidence cap (default/casual/strict/gov) was
+    previously implemented only in wrap_username_scan. Extended to the other
+    identity-adjacent wrappers (email/phone/ip/domain) via the shared
+    _apply_context_cap() helper. Default (context=None) behavior must be
+    byte-for-byte unchanged; these pin the new opt-in behavior."""
+
+    EMAIL_STRONG = {
+        "validation": {
+            "format_valid": True, "mx_reachable": True,
+            "mx_provider": "Google Workspace",
+            "dmarc": {"present": True, "policy": "reject"},
+        },
+        "services_found": 2,
+    }
+    IP_ALL_THREE = {
+        "geolocation": {"found": True}, "rdap": {"found": True},
+        "reverse_dns": {"hostname": "a.b"},
+    }
+    DOMAIN_ALL_FOUR = {
+        "dns": {"a_records": ["1.2.3.4"]}, "rdap": {"found": True},
+        "ssl": {"has_ssl": True}, "http": {"reachable": True},
+    }
+    PHONE_STRONG = {
+        "parsed": {"valid": True, "country_code": "+1", "enrichment_source": "libphonenumber"},
+        "social_checks": [
+            {"platform": "WhatsApp", "possible": True},
+            {"platform": "Telegram", "possible": True},
+        ],
+        "reverse_lookup": {"lookup_done": True, "carrier": "Example Carrier"},
+    }
+
+    def test_email_default_context_is_unaffected(self):
+        env = t.wrap_email(self.EMAIL_STRONG)
+        assert env["trust"]["confidence"] == 0.84
+        assert not any(w.startswith("context") for w in env["trust"]["warnings"])
+
+    def test_email_gov_context_caps_confidence(self):
+        env = t.wrap_email(self.EMAIL_STRONG, context="gov")
+        assert env["trust"]["confidence"] == 0.70
+        assert "context:gov" in env["trust"]["warnings"]
+        assert "context_cap:0.70" in env["trust"]["warnings"]
+        assert env["trust"]["extra"]["context"] == "gov"
+
+    def test_ip_strict_context_caps_confidence(self):
+        env = t.wrap_ip(self.IP_ALL_THREE, context="strict")
+        # base 0.92 would exceed strict's 0.80 cap
+        assert env["trust"]["confidence"] == 0.80
+        assert env["trust"]["verdict"] == t.VERIFIED  # cap affects confidence, not the verdict tier
+        assert "context_cap:0.80" in env["trust"]["warnings"]
+
+    def test_ip_default_context_unaffected(self):
+        env = t.wrap_ip(self.IP_ALL_THREE)
+        assert env["trust"]["confidence"] == 0.92
+        assert env["trust"]["extra"]["context"] == "default"
+
+    def test_domain_gov_context_caps_confidence(self):
+        env = t.wrap_domain(self.DOMAIN_ALL_FOUR, context="gov")
+        assert env["trust"]["confidence"] == 0.70
+        assert "context_cap:0.70" in env["trust"]["warnings"]
+
+    def test_domain_casual_context_never_caps_below_default(self):
+        """casual's cap (1.0) must never make a result MORE restrictive
+        than not passing a context at all."""
+        no_context = t.wrap_domain(self.DOMAIN_ALL_FOUR)
+        casual = t.wrap_domain(self.DOMAIN_ALL_FOUR, context="casual")
+        assert casual["trust"]["confidence"] == no_context["trust"]["confidence"]
+
+    def test_phone_strict_context_caps_confidence(self):
+        env = t.wrap_phone(self.PHONE_STRONG, context="strict")
+        assert env["trust"]["confidence"] <= 0.80
+        assert env["trust"]["extra"]["context"] == "strict"
+
+    def test_unknown_context_falls_back_to_default_safely(self):
+        env = t.wrap_email(self.EMAIL_STRONG, context="not-a-real-context")
+        default = t.wrap_email(self.EMAIL_STRONG)
+        assert env["trust"]["confidence"] == default["trust"]["confidence"]
+
+    def test_invalid_format_email_still_respects_context_cap(self):
+        """Even the early-return bad-format path (confidence 0.05) must run
+        through the context helper for consistent tagging, though at that
+        confidence no real deployment context would ever clamp it."""
+        env = t.wrap_email({"validation": {"format_valid": False}}, context="gov")
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+        assert env["trust"]["confidence"] == 0.05

@@ -18,10 +18,10 @@ jobs:
       fail-fast: false
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -32,3 +32,11 @@ jobs:
 
       - name: Test
         run: python -m pytest tests/ -v
+
+      - name: Coverage (enforces .coveragerc fail_under)
+        run: |
+          coverage run -m pytest tests/ -q
+          coverage report
+
+      - name: Type check (py.typed is a promise to downstream type-checkers)
+        run: mypy --strict src/osint_trust_envelope/
