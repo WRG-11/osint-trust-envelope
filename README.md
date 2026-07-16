@@ -190,6 +190,36 @@ static ladder. Wiring a provider is entirely opt-in.
 
 ---
 
+## Optional: deployment-context confidence caps
+
+Different operational settings tolerate different amounts of false-positive
+risk. A hobbyist ("casual") deployment wants permissive results; a compliance
+or threat-intel deployment ("gov") needs every verdict to be defensible even
+when the upstream signals are strong. `wrap_username_scan`, `wrap_email`,
+`wrap_phone`, `wrap_ip`, and `wrap_domain` accept an optional keyword-only
+`context` argument that clamps the final confidence:
+
+```python
+from osint_trust_envelope import wrap_domain
+
+env = wrap_domain(raw, context="gov")
+env["trust"]["confidence"]  # capped at <= 0.70, regardless of the raw signal strength
+env["trust"]["warnings"]    # includes "context:gov" and, if it fired, "context_cap:0.70"
+```
+
+| Context | Confidence cap |
+| --- | --- |
+| `default` / `None` | 1.0 (no cap) |
+| `casual` | 1.0 (no cap) |
+| `strict` | 0.80 |
+| `gov` | 0.70 |
+
+The cap only affects `confidence`, never the `verdict` tier itself — a `gov`
+context can still report `verified`, just never above 0.70. Omitting
+`context` entirely (the default) is fully backward compatible.
+
+---
+
 ## Install
 
 ```bash

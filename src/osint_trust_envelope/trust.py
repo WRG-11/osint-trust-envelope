@@ -226,6 +226,34 @@ def _resolve_context(name: str | None) -> dict[str, Any]:
     return _CONTEXT_PROFILES.get(name or "default", _CONTEXT_PROFILES["default"])
 
 
+def _apply_context_cap(
+    conf: float,
+    context: str | None,
+    warnings: list[str],
+    reasoning: list[str] | None = None,
+) -> float:
+    """Clamp confidence to the deployment context's ceiling; record why.
+
+    Shared by every wrap_* function that accepts a ``context`` kwarg
+    (default/casual/strict/gov) so a permissive scan in a stricter
+    deployment can't claim more trust than that context allows. Tags the
+    non-default context on every call (even when it doesn't end up
+    clamping anything) so operators can see which policy was in effect.
+    """
+    if context and context in VALID_CONTEXTS and context != "default":
+        warnings.append(f"context:{context}")
+    confidence_cap = float(_resolve_context(context)["confidence_cap"])
+    if conf > confidence_cap:
+        warnings.append(f"context_cap:{confidence_cap:.2f}")
+        if reasoning is not None:
+            reasoning.append(
+                f"Confidence clamped from {conf:.2f} -> {confidence_cap:.2f} "
+                f"by context '{context or 'default'}'."
+            )
+        conf = confidence_cap
+    return conf
+
+
 # -- Cross-scan identity corroboration --------------------------------------
 #
 # Given multiple username scan envelopes, detect pairs that share enough
@@ -355,8 +383,6 @@ def wrap_username_scan(
         platform_boost_threshold = int(context_profile["platform_threshold"])
     promotion_boost_min = float(context_profile["promotion_boost_min"])
     confidence_cap = float(context_profile["confidence_cap"])
-    if context and context in VALID_CONTEXTS and context != "default":
-        warnings.append(f"context:{context}")
 
     # The caller passes the raw username-scan dict:
     # {sites_checked, sites_found, results: [...]}.
@@ -520,13 +546,7 @@ def wrap_username_scan(
         warnings.append("strict_mode_active")
     # Context confidence cap: a permissive scan in a gov/strict deployment
     # must not claim more trust than the context permits.
-    if conf > confidence_cap:
-        warnings.append(f"context_cap:{confidence_cap:.2f}")
-        reasoning.append(
-            f"Confidence clamped from {conf:.2f} -> {confidence_cap:.2f} "
-            f"by context '{context or 'default'}'."
-        )
-        conf = confidence_cap
+    conf = _apply_context_cap(conf, context, warnings, reasoning)
     # Keep 'inferred' within its documented confidence band (<= 0.80) even when
     # a permissive context cap would allow more: 404-derived corroboration never
     # earns verified-tier confidence. The verdict ceiling itself is unchanged.
@@ -583,7 +603,7 @@ def wrap_username_scan(
     )
 
 
-def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
+def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any]:
     """Email OSINT trust envelope (tier-2).
 
     Confidence ladder (cumulative — best signal in the chain wins):
@@ -637,6 +657,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
     # -- Bad format ---------------------------------------------------------
     if not format_valid:
         errors.append("invalid_email_format")
+        _apply_context_cap(0.05, context, mandatory_warnings)
         return envelope(
             raw,
             build_trust(
@@ -697,6 +718,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
         warnings.append("breach_check_skipped_or_unavailable")
 
     warnings = mandatory_warnings + warnings
+    conf = _apply_context_cap(conf, context, warnings)
 
     extra: dict[str, Any] = {
         "format_valid": True,
@@ -710,6 +732,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
         "dmarc_policy": dmarc_policy or None,
         "disposable": disposable,
         "role_account": role_account.get("matched") if is_role else None,
+        "context": context or "default",
     }
 
     return envelope(
@@ -726,7 +749,7 @@ def wrap_email(raw: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
+def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any]:
     """Phone OSINT trust envelope.
 
     Confidence ladder (no paid API path):
@@ -829,6 +852,8 @@ def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
     elif reverse.get("skipped_reason"):
         warnings.append(f"reverse_lookup_skipped:{reverse.get('skipped_reason')}")
 
+    conf = _apply_context_cap(conf, context, warnings)
+
     return envelope(
         raw,
         build_trust(
@@ -860,12 +885,13 @@ def wrap_phone(raw: dict[str, Any]) -> dict[str, Any]:
                     s.get("platform") for s in social if isinstance(s, dict)
                 ],
                 "numverify_used": bool(reverse.get("lookup_done")),
+                "context": context or "default",
             },
         ),
     )
 
 
-def wrap_ip(raw: dict[str, Any]) -> dict[str, Any]:
+def wrap_ip(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any]:
     """IP OSINT — tier-2 ladder.
 
     Verdicts:
@@ -943,6 +969,8 @@ def wrap_ip(raw: dict[str, Any]) -> dict[str, Any]:
     # Mandatory honesty disclaimers — always present so consumers can't forget
     warnings.append("ip_geolocation_is_isp_level_not_user_level")
 
+    conf = _apply_context_cap(conf, context, warnings)
+
     return envelope(
         raw,
         build_trust(
@@ -968,12 +996,13 @@ def wrap_ip(raw: dict[str, Any]) -> dict[str, Any]:
                 "asn_label": asn_label,
                 "is_cloud_provider": asn_class == "cloud",
                 "is_datacenter": asn_class in ("cloud", "hosting"),
+                "context": context or "default",
             },
         ),
     )
 
 
-def wrap_domain(raw: dict[str, Any]) -> dict[str, Any]:
+def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any]:
     """Domain OSINT — tier-2 ladder.
 
     Base verdicts (from DNS + RDAP + SSL + HTTP):
@@ -1101,6 +1130,8 @@ def wrap_domain(raw: dict[str, Any]) -> dict[str, Any]:
     # Mandatory honesty disclaimer — registrar / WHOIS data is often redacted
     warnings.append("registrar_data_may_be_privacy_redacted")
 
+    conf = _apply_context_cap(conf, context, warnings)
+
     return envelope(
         raw,
         build_trust(
@@ -1137,6 +1168,7 @@ def wrap_domain(raw: dict[str, Any]) -> dict[str, Any]:
                 "ssl_self_signed": ssl_self_signed,
                 "ssl_sha256_fingerprint": ssl_fingerprint,
                 "ssl_deep_healthy": ssl_deep_healthy,
+                "context": context or "default",
             },
         ),
     )
@@ -1162,13 +1194,23 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     if not hibp_key and not em_check:
         warnings.append("hibp_api_key_missing_email_check_unavailable")
 
+    # An email_check that was ATTEMPTED but neither succeeded nor was
+    # cleanly skipped (e.g. a mid-request HIBP error/timeout) must not be
+    # confused with "no email check requested at all" -- but it also must
+    # not erase a genuinely verified password check. Both states fall
+    # through to the same pw_ok branch below; the underlying error (if any)
+    # is still surfaced rather than silently dropped.
+    em_attempted_but_inconclusive = bool(em_check) and not em_ok and not em_skipped
+
     if pw_ok and em_ok:
         verdict, conf = VERIFIED, 0.97
     elif pw_ok and em_skipped:
         verdict, conf = VERIFIED, 0.88
         warnings.append("email_breach_skipped_no_hibp_key")
-    elif pw_ok and not em_check:
+    elif pw_ok and (not em_check or em_attempted_but_inconclusive):
         verdict, conf = VERIFIED, 0.90
+        if em_attempted_but_inconclusive and em_check.get("error"):
+            errors.append(f"email_check_error: {em_check.get('error')}")
     elif em_ok and not pw_check:
         verdict, conf = VERIFIED, 0.93
     elif em_skipped and not pw_check:
@@ -1431,41 +1473,51 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     mods = raw.get("modules", {}) or {}
-    sub_verdicts: list[str] = []
+    # (verdict, confidence) per sub-module, in insertion order.
+    sub_results: list[tuple[str, float]] = []
 
     # Inspect each sub-module and compute a mini-verdict for it.
     for name, sub in mods.items():
         if not isinstance(sub, dict):
             continue
         if name == "username_scan":
-            v = wrap_username_scan(sub)["trust"]["verdict"]
+            tb = wrap_username_scan(sub)["trust"]
         elif name == "email":
-            v = wrap_email(sub)["trust"]["verdict"]
+            tb = wrap_email(sub)["trust"]
         elif name == "phone":
-            v = wrap_phone(sub)["trust"]["verdict"]
+            tb = wrap_phone(sub)["trust"]
         elif name == "ip":
-            v = wrap_ip(sub)["trust"]["verdict"]
+            tb = wrap_ip(sub)["trust"]
         elif name == "domain":
-            v = wrap_domain(sub)["trust"]["verdict"]
+            tb = wrap_domain(sub)["trust"]
         elif name == "breach":
-            v = wrap_breach(sub)["trust"]["verdict"]
+            tb = wrap_breach(sub)["trust"]
         elif name == "avatar":
-            v = wrap_avatar(sub)["trust"]["verdict"]
+            tb = wrap_avatar(sub)["trust"]
         elif name == "company":
-            v = wrap_company(sub)["trust"]["verdict"]
+            tb = wrap_company(sub)["trust"]
         else:
-            v = UNVERIFIED
-        sub_verdicts.append(v)
+            tb = {"verdict": UNVERIFIED, "confidence": _CONF_ANCHOR[UNVERIFIED]}
+        sub_results.append((tb["verdict"], tb["confidence"]))
+
+    sub_verdicts = [v for v, _ in sub_results]
 
     if not sub_verdicts:
         overall = UNVERIFIED
+        conf = _CONF_ANCHOR[UNVERIFIED]
     else:
         # pick the lowest-trust verdict
         order = [UNVERIFIED, HEURISTIC, INFERRED, VERIFIED]
         lowest = min(sub_verdicts, key=lambda x: order.index(x) if x in order else 0)
         overall = lowest
+        # Preserve real precision instead of collapsing to a static
+        # per-verdict anchor: take the WEAKEST confidence among the
+        # sub-modules that actually landed on the weakest tier. A pipeline
+        # whose weak link is a strong 'inferred' (0.79) is meaningfully
+        # more trustworthy than one whose weak link barely cleared
+        # 'inferred' (0.56) -- both previously reported the same number.
+        conf = min(c for v, c in sub_results if v == overall)
 
-    conf = _CONF_ANCHOR.get(overall, 0.10)
     warnings = ["pipeline_verdict_equals_weakest_submodule"]
 
     return envelope(
