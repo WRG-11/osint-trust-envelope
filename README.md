@@ -113,7 +113,7 @@ bare green checkmark.
 
 ### `wrg_project_osint` — token-project OSINT aggregator
 
-[WinstonRedGuard monorepo](https://github.com/WRG-11) uses this library to
+[WRG-11](https://github.com/WRG-11) uses this library to
 wrap [maigret](https://github.com/soxoj/maigret) username-scan results and
 RDAP domain-age lookups before surfacing them to the CLI and cockpit.
 
