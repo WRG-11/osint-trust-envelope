@@ -54,6 +54,20 @@ Four levels, most trustworthy to least:
 `confidence` is a separate 0-1 number that tracks the verdict but lets you
 order results *within* a band.
 
+**These bands are enforced, not advisory.** They live in `VERDICT_BANDS` and
+every wrapper funnels through one check, so a verdict label can never be paired
+with a confidence its own band cannot hold. The two directions are deliberately
+asymmetric:
+
+- a confidence **above** the ceiling is clamped down (`band_cap:<verdict>:<max>`);
+- a confidence **below** the floor **demotes the verdict**
+  (`band_demoted:<from>-><to>`) rather than raising the number. Inflating a
+  confidence to match its label would be the library asserting more than it
+  measured, which is the failure this package exists to prevent.
+
+The one exception is a deployment-context cap (below): that lowers the number
+as a matter of policy, not evidence, so it never demotes the verdict.
+
 > Note on the word **`verified`**: it is a verdict *label* meaning "an
 > authoritative upstream source confirmed this", assigned from the raw data you
 > pass in. The library performs no network calls and makes no independent claim
@@ -74,8 +88,8 @@ concrete tradecraft reason the source type can't escape.
 | `wrap_company` | **inferred** | A GitHub org is a real API hit, but the social-presence half is 404-scraped. |
 | `wrap_avatar` | **inferred** | "A profile image exists at this URL" is not "owned by the target"; correlation is probabilistic. |
 | `wrap_paste` | **inferred** | Hits require manual relevance review; the presence of a string is not attribution. |
-| `wrap_ip` | **verified** (<= 0.92; <= 0.95 for a Tor exit) | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
-| `wrap_domain` | **verified** (<= 0.96) | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
+| `wrap_ip` | **verified** (all 3 base sources, <= 0.92; <= 0.95 for a Tor exit). Two of three lands at `inferred` - it does not clear the 0.85 verified floor. | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
+| `wrap_domain` | **verified** (<= 0.96). Two of four base sources alone lands at `inferred`; two plus DNSSEC / CT / SSL-deep corroboration clears the floor. | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
 | `wrap_breach` | **verified** (<= 0.97) | The HIBP k-anonymity password check is cryptographically real; the email-breach path needs a paid key. |
 | `wrap_whois` / `wrap_ssl` / `wrap_metadata` | **verified** | RDAP API, a TLS handshake, and a local binary parse are authoritative for what they measure (EXIF can still be spoofed or stripped). |
 | `wrap_pipeline` | **= weakest sub-module** | A pipeline is only as trustworthy as its least-trustworthy link. |

@@ -11,6 +11,40 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`VERDICT_BANDS` + `_enforce_band()` — the published confidence bands are
+  now enforced, in one place, for every wrapper.** The README has documented
+  a band per verdict since 0.1.0 (`verified` 0.85-1.00, `inferred` 0.55-0.80,
+  `heuristic` 0.25-0.55, `unverified` 0.00-0.20) but only `wrap_username_scan`
+  enforced its ceiling, inline. Measured against the table with the guard
+  removed, **6 of the 15 wrappers emitted a verdict its own confidence could
+  not back**:
+
+  | wrapper | before | violation |
+  | --- | --- | --- |
+  | `wrap_email` full chain | `inferred 0.84` | 0.04 over the ceiling |
+  | `wrap_phone` + numverify | `inferred 0.82` | 0.02 over the ceiling |
+  | `wrap_ip` 2 of 3 sources | `verified 0.82` | under the 0.85 floor |
+  | `wrap_domain` 2 of 4 sources | `verified 0.80` | under the 0.85 floor |
+  | `wrap_username_scan` 3 hits / 40 sites | `inferred 0.469` | inside the *heuristic* band |
+  | `wrap_pipeline` (same scan as weakest link) | `inferred 0.458` | propagated |
+
+  The check lives in `build_trust()`, which every wrapper returns through, so
+  it reaches all fifteen by construction and cannot fall out of step with a
+  newly added one. The two directions are asymmetric on purpose: a confidence
+  above the ceiling is **clamped down**, a confidence below the floor
+  **demotes the verdict** rather than inflating the number — raising a
+  confidence to match its label would have the library assert more than it
+  measured. Demotions are announced (`band_demoted:<from>-><to>`), never
+  silent. `VERDICT_BANDS` is exported.
+
+- Tests: `tests/test_band_invariant.py` (60 tests) — the invariant over a grid
+  of every wrapper × representative inputs × every deployment context, the six
+  historical violations pinned as regressions, and three *reach* tests: that
+  the grid covers every public wrapper, that every wrapper funnels through
+  `build_trust`, and that the per-wrapper inline copy of the ceiling has not
+  come back. Verified against a control arm (the band table present, the
+  enforcement absent): 6 of 15 wrappers fail, 9 pass.
+
 - README: "Used by" section documenting `wrg_project_osint` integration with
   concrete examples of the zero-hit (clean-negative -> `inferred`) and
   adapter-error (`sites_checked=0` -> `unverified`) conventions.
@@ -48,6 +82,24 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `wrap_username_scan`: the corroboration promotion and the confidence it
+  promoted answered to **different denominators**. Promotion qualified on the
+  *absolute* number of independent platforms (`>= 3`), while confidence was
+  computed from the hit *ratio* (`0.30 + found/checked * 0.25`). On a wide
+  scan those diverge: 3 hits across 40 responding sites cleared the platform
+  bar at confidence 0.469, so the envelope carried an `inferred` label over a
+  number in the *heuristic* band — and scanning **more** sites for the same
+  evidence made the confidence **lower**. Sparse-but-wide is the normal shape
+  of a real username scan (it is exactly what `wrg_project_osint` feeds in),
+  not an edge case. Promotion now additionally requires the boosted confidence
+  to reach the `inferred` floor; when it does not, the verdict holds at
+  `heuristic` and says why (`corroboration_below_inferred_floor` + a reasoning
+  bullet). `_enforce_band` remains the backstop.
+- The `inferred` ceiling was re-implemented inline inside `wrap_username_scan`
+  (added in `8b69524`, *after* the `wrap_email` / `wrap_phone` ladders it was
+  meant to police) and consequently never reached them. That copy is removed
+  in favour of the shared check; the two ladders now read their top rung from
+  `VERDICT_BANDS[INFERRED][1]` instead of hardcoding 0.84 / 0.82.
 - `wrap_breach`: an `email_check` that was **attempted but errored** (not
   skipped, not ok — e.g. a mid-request HIBP timeout) fell through to the
   generic `INFERRED 0.55` branch, silently downgrading a genuinely verified

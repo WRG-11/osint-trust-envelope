@@ -30,11 +30,15 @@ Verdict ladder (most trustworthy -> least)
                    was rate-limited, needed a missing API key, or the input
                    was malformed. The honest "we don't know" state.
 
-Confidence 0.0-1.0 is orthogonal to verdict but tracks it roughly:
+Confidence 0.0-1.0 orders results *within* a verdict, and its range per verdict
+is enforced, not advisory (see ``VERDICT_BANDS`` / ``_enforce_band``):
 * verified      -> 0.85 - 1.00
 * inferred      -> 0.55 - 0.80
 * heuristic     -> 0.25 - 0.55
 * unverified    -> 0.00 - 0.20
+
+A number above its band is clamped down; a number below its band demotes the
+verdict rather than inflating the number. Both directions claim less.
 
 The package is stdlib-only. Optional historical-reliability enrichment is a
 pluggable module-level seam (see ``_get_site_confidences`` /
@@ -62,6 +66,23 @@ _CONF_ANCHOR = {
     UNVERIFIED: 0.10,
 }
 
+# The confidence band each verdict is allowed to occupy. This table IS the
+# public contract -- the README's verdict ladder prints exactly these numbers --
+# and ``_enforce_band`` below is the only thing that makes the contract true.
+#
+# The bands are deliberately not contiguous. The gaps (0.20-0.25 and
+# 0.80-0.85) are dead zones: a result that lands there is not "between two
+# verdicts", it is a wrapper that computed a number its own label cannot back.
+VERDICT_BANDS: dict[str, tuple[float, float]] = {
+    VERIFIED: (0.85, 1.00),
+    INFERRED: (0.55, 0.80),
+    HEURISTIC: (0.25, 0.55),
+    UNVERIFIED: (0.00, 0.20),
+}
+
+# Verdicts strongest-first, for the demotion search in ``_enforce_band``.
+_VERDICTS_STRONGEST_FIRST = (VERIFIED, INFERRED, HEURISTIC, UNVERIFIED)
+
 # Human-readable labels for a UI legend.
 VERDICT_LABELS = {
     VERIFIED: "Verified",
@@ -80,6 +101,84 @@ VERDICT_DESCRIPTIONS = {
 
 def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def _enforce_band(
+    verdict: str,
+    confidence: float,
+    warnings: list[str] | None = None,
+) -> tuple[str, float]:
+    """Never let a verdict label out-claim its own confidence number.
+
+    Two violations are possible and they are **not** symmetric:
+
+    * confidence ABOVE the band ceiling -> clamp the NUMBER down. The verdict
+      tier is the ceiling the source type can support; a number above it is an
+      overclaim, and lowering it costs nothing.
+    * confidence BELOW the band floor -> demote the VERDICT. Raising the number
+      to meet the label would have the library assert more than it measured,
+      which is the exact failure this package exists to prevent. So the label
+      comes down to the band the number actually lands in.
+
+    Both directions move toward claiming LESS. That asymmetry is the point: a
+    naive "clamp into range" would satisfy the invariant while silently
+    inflating confidences, turning the guard into an overclaim generator.
+
+    Why this lives in :func:`build_trust` rather than in the wrappers: every
+    one of the fifteen ``wrap_*`` functions returns through ``build_trust``, so
+    enforcing here reaches all of them by construction and cannot drift out of
+    sync with a newly added wrapper. Before this existed the band was enforced
+    in exactly one wrapper (``wrap_username_scan``, added in 8b69524 *after*
+    the ladders it was meant to police) and measurably failed to reach the
+    rest.
+
+    Measured 2026-07-29, before this function existed:
+
+    ==============================  ========================================
+    ``wrap_email`` full chain       ``inferred 0.84``  (ceiling is 0.80)
+    ``wrap_phone`` + numverify      ``inferred 0.82``  (ceiling is 0.80)
+    ``wrap_username_scan`` 3 of 40  ``inferred 0.469`` (floor is 0.55 -- that
+                                    number is inside the *heuristic* band)
+    ==============================  ========================================
+    """
+    conf = _clamp(confidence)
+    if verdict not in VERDICT_BANDS:
+        return verdict, conf
+
+    # A deployment-context cap is a POLICY reduction, not an evidence
+    # reduction: `gov` lowers the number it is willing to print, it does not
+    # un-observe the RDAP response behind a `verified`. Demoting there would
+    # destroy the one fact the operator most needs (the source was
+    # authoritative) and would contradict the published contract, which states
+    # the cap "only affects confidence, never the verdict tier itself".
+    # So the FLOOR is waived once a context cap has fired; the CEILING is not,
+    # because clamping down can never overclaim.
+    policy_capped = any(w.startswith("context_cap:") for w in (warnings or ()))
+
+    low, high = VERDICT_BANDS[verdict]
+    if conf > high:
+        if warnings is not None:
+            warnings.append(f"band_cap:{verdict}:{high:.2f}")
+        return verdict, high
+    if conf < low and not policy_capped:
+        # Pick the strongest verdict whose band can actually hold this number.
+        # A confidence in a DEAD ZONE (e.g. 0.82, below `verified`'s 0.85 floor
+        # but above `inferred`'s 0.80 ceiling) belongs to no band at all, so the
+        # demotion target's ceiling has to be applied as well -- searching by
+        # floor alone lands right back out of band, which is the bug the first
+        # cut of this function shipped with.
+        demoted, demoted_conf = UNVERIFIED, VERDICT_BANDS[UNVERIFIED][1]
+        for candidate in _VERDICTS_STRONGEST_FIRST:
+            c_low, c_high = VERDICT_BANDS[candidate]
+            if c_low <= conf:
+                demoted, demoted_conf = candidate, min(conf, c_high)
+                break
+        if warnings is not None:
+            warnings.append(f"band_demoted:{verdict}->{demoted}")
+            if demoted_conf != conf:
+                warnings.append(f"band_cap:{demoted}:{demoted_conf:.2f}")
+        return demoted, demoted_conf
+    return verdict, conf
 
 
 # -- Optional per-site confidence enrichment (pluggable seam) ----------------
@@ -148,12 +247,17 @@ def build_trust(
         verdict = UNVERIFIED
     if confidence is None:
         confidence = _CONF_ANCHOR[verdict]
+    # Single choke point: every wrap_* function returns through here, so the
+    # band invariant is enforced once and reaches all of them. See
+    # ``_enforce_band`` for why a floor violation demotes rather than inflates.
+    warn_list = list(warnings or [])
+    verdict, confidence = _enforce_band(verdict, confidence, warn_list)
     block: dict[str, Any] = {
         "verdict": verdict,
-        "confidence": round(_clamp(confidence), 3),
+        "confidence": round(confidence, 3),
         "method": method,
         "source": source,
-        "warnings": list(warnings or []),
+        "warnings": warn_list,
         "errors": list(errors or []),
         "reasoning": list(reasoning or []),
     }
@@ -530,13 +634,33 @@ def wrap_username_scan(
             # Significant boost on a still-heuristic verdict promotes to
             # inferred — but only when there is no contradiction flag and
             # the boost clears the context-specific minimum.
+            #
+            # The promotion test and the confidence must answer to the SAME
+            # yardstick. The boost qualifies on the ABSOLUTE number of
+            # independent platforms; ``conf`` is computed from the hit RATIO.
+            # On a wide scan those diverge badly: 3 hits across 40 responding
+            # sites cleared the 3-platform bar while the confidence sat at
+            # 0.469 -- a number inside the *heuristic* band. Promoting there
+            # printed an 'inferred' label over a heuristic number, which is
+            # the overclaim this package exists to prevent. Sparse-but-wide is
+            # the normal shape of a real username scan, not an edge case.
+            inferred_floor = VERDICT_BANDS[INFERRED][0]
             if verdict == HEURISTIC and corroboration_boost >= promotion_boost_min and not contradiction:
-                verdict = INFERRED
-                warnings.append("cross_adapter_corroboration_promotion")
-                reasoning.append(
-                    f"Promoted heuristic -> inferred on strong cross-adapter agreement "
-                    f"(boost {corroboration_boost:.2f} >= context floor {promotion_boost_min:.2f})."
-                )
+                if conf >= inferred_floor:
+                    verdict = INFERRED
+                    warnings.append("cross_adapter_corroboration_promotion")
+                    reasoning.append(
+                        f"Promoted heuristic -> inferred on strong cross-adapter agreement "
+                        f"(boost {corroboration_boost:.2f} >= context floor {promotion_boost_min:.2f})."
+                    )
+                else:
+                    warnings.append("corroboration_below_inferred_floor")
+                    reasoning.append(
+                        f"Cross-adapter agreement cleared the boost floor "
+                        f"({corroboration_boost:.2f} >= {promotion_boost_min:.2f}) but the resulting "
+                        f"confidence {conf:.3f} stays under the 'inferred' band floor "
+                        f"{inferred_floor:.2f} - verdict held at heuristic."
+                    )
 
     if err_count > 0:
         warnings.append(f"{err_count}_sites_errored")
@@ -547,12 +671,10 @@ def wrap_username_scan(
     # Context confidence cap: a permissive scan in a gov/strict deployment
     # must not claim more trust than the context permits.
     conf = _apply_context_cap(conf, context, warnings, reasoning)
-    # Keep 'inferred' within its documented confidence band (<= 0.80) even when
-    # a permissive context cap would allow more: 404-derived corroboration never
-    # earns verified-tier confidence. The verdict ceiling itself is unchanged.
-    if verdict == INFERRED and conf > 0.80:
-        warnings.append("inferred_band_cap:0.80")
-        conf = 0.80
+    # The 'inferred' ceiling used to be re-implemented here, inline, and only
+    # here -- which is exactly why wrap_email and wrap_phone drifted past it.
+    # It now lives in _enforce_band(), applied by build_trust() for every
+    # wrapper. Nothing replaces it at this spot on purpose.
     if anomalies:
         high = [a for a in anomalies if a.get("direction") == "high"]
         low = [a for a in anomalies if a.get("direction") == "low"]
@@ -615,7 +737,7 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         format + MX + DMARC=quarantine|reject        → inferred   0.70
         + Gravatar/GitHub/Keybase hit (services>0)   → inferred   0.78
         + provider + DMARC strict + services>0
-            + not disposable + not role              → inferred   0.84
+            + not disposable + not role              → inferred   0.80
 
     Hard cap: ``inferred``. We never reach ``verified`` because:
         * an MX record proves the domain accepts mail, not that THIS mailbox
@@ -696,7 +818,10 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
             and dmarc_strict
             and services_found > 0
         ):
-            conf = max(conf, 0.84)
+            # Top of the inferred band, read from the band table rather than
+            # hardcoded: this rung used to be 0.84, four points ABOVE the
+            # ceiling the README publishes, and nothing caught it.
+            conf = max(conf, VERDICT_BANDS[INFERRED][1])
     else:
         warnings.append("mx_lookup_failed_or_unreachable")
 
@@ -757,7 +882,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         libphonenumber parse        → heuristic 0.55
         + 1 messenger presence hit  → inferred  0.66
         + 2 messenger presence hits → inferred  0.74
-        + Numverify API confirmed   → inferred  0.82  (still capped — MNP)
+        + Numverify API confirmed   → inferred  0.80  (top of band — MNP)
 
     The verdict NEVER becomes ``verified`` because:
         * libphonenumber's "carrier" is the original prefix allocation,
@@ -838,7 +963,10 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     reverse = raw.get("reverse_lookup", {}) or {}
     if reverse.get("lookup_done"):
         verdict = INFERRED
-        conf = max(conf, 0.82)
+        # Top of the inferred band (was a hardcoded 0.82, i.e. two points over
+        # the published ceiling). A reverse lookup is the strongest phone
+        # signal there is, so it earns the top of the band -- and no more.
+        conf = max(conf, VERDICT_BANDS[INFERRED][1])
         warnings.append("numverify_api_confirmed")
         # Drop the now-stale prefix-only caveats — we have a real carrier.
         for w in (
