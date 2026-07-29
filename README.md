@@ -54,6 +54,20 @@ Four levels, most trustworthy to least:
 `confidence` is a separate 0-1 number that tracks the verdict but lets you
 order results *within* a band.
 
+**These bands are enforced, not advisory.** They live in `VERDICT_BANDS` and
+every wrapper funnels through one check, so a verdict label can never be paired
+with a confidence its own band cannot hold. The two directions are deliberately
+asymmetric:
+
+- a confidence **above** the ceiling is clamped down (`band_cap:<verdict>:<max>`);
+- a confidence **below** the floor **demotes the verdict**
+  (`band_demoted:<from>-><to>`) rather than raising the number. Inflating a
+  confidence to match its label would be the library asserting more than it
+  measured, which is the failure this package exists to prevent.
+
+The one exception is a deployment-context cap (below): that lowers the number
+as a matter of policy, not evidence, so it never demotes the verdict.
+
 > Note on the word **`verified`**: it is a verdict *label* meaning "an
 > authoritative upstream source confirmed this", assigned from the raw data you
 > pass in. The library performs no network calls and makes no independent claim
@@ -74,8 +88,8 @@ concrete tradecraft reason the source type can't escape.
 | `wrap_company` | **inferred** | A GitHub org is a real API hit, but the social-presence half is 404-scraped. |
 | `wrap_avatar` | **inferred** | "A profile image exists at this URL" is not "owned by the target"; correlation is probabilistic. |
 | `wrap_paste` | **inferred** | Hits require manual relevance review; the presence of a string is not attribution. |
-| `wrap_ip` | **verified** (<= 0.92; <= 0.95 for a Tor exit) | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
-| `wrap_domain` | **verified** (<= 0.96) | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
+| `wrap_ip` | **verified** (all 3 base sources, <= 0.92; <= 0.95 for a Tor exit). Two of three lands at `inferred` - it does not clear the 0.85 verified floor. | Geo + RDAP + reverse-DNS can corroborate each other, but geolocation is ISP-level, never user-level. |
+| `wrap_domain` | **verified** (<= 0.96). Two of four base sources alone lands at `inferred`; two plus DNSSEC / CT / SSL-deep corroboration clears the floor. | DNS + RDAP + SSL + HTTP are authoritative *for the domain*; registrar/WHOIS data is frequently privacy-redacted. |
 | `wrap_breach` | **verified** (<= 0.97) | The HIBP k-anonymity password check is cryptographically real; the email-breach path needs a paid key. |
 | `wrap_whois` / `wrap_ssl` / `wrap_metadata` | **verified** | RDAP API, a TLS handshake, and a local binary parse are authoritative for what they measure (EXIF can still be spoofed or stripped). |
 | `wrap_pipeline` | **= weakest sub-module** | A pipeline is only as trustworthy as its least-trustworthy link. |
@@ -106,6 +120,49 @@ Being honest about the tool is the same discipline the tool encodes:
 
 If you wire this into a product, surface the verdict and the warnings - not a
 bare green checkmark.
+
+---
+
+## Checking an envelope
+
+Every result also explains itself. `trust.reasoning` carries a short, ordered
+account of *why* the verdict came out that way - which sources answered, which
+signal set the ceiling, what held it back:
+
+```python
+from osint_trust_envelope import wrap_ip
+
+env = wrap_ip({"geolocation": {"found": True}, "rdap": {"found": True},
+               "reverse_dns": {}})
+
+env["trust"]["verdict"]    # -> "inferred"  (2 of 3 does not clear the verified floor)
+env["trust"]["reasoning"]  # -> ["2 of 3 base sources answered (geolocation, RDAP).",
+                           #     "Geolocation resolves to the ISP, never to a person."]
+```
+
+And the contract itself is checkable. `validate_envelope` returns the list of
+violations in an envelope - shape, required fields and their types, a known
+verdict, and the band invariant - so a consumer can assert on the guarantee
+rather than trust it:
+
+```python
+from osint_trust_envelope import validate_envelope
+
+validate_envelope(env)          # -> []   (clean)
+
+validate_envelope({"result": {}, "trust": {
+    "verdict": "verified", "confidence": 0.40, "method": "m", "source": "s",
+    "warnings": [], "errors": [], "reasoning": []}})
+# -> ['trust.confidence 0.4 is below the verified floor 0.85 and no
+#     context_cap warning explains it']
+```
+
+It never raises - malformed input is reported, not thrown - so it is safe on a
+payload deserialised from JSON or produced by an older version of this package.
+
+It deliberately does **not** judge whether the verdict is the *right* one for
+your data. Nothing outside your own adapters can know that, and a validator
+that pretended otherwise would be the same overclaim in a new place.
 
 ---
 
