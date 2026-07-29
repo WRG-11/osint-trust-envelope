@@ -11,6 +11,87 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`VERDICT_BANDS` + `_enforce_band()` — the published confidence bands are
+  now enforced, in one place, for every wrapper.** The README has documented
+  a band per verdict since 0.1.0 (`verified` 0.85-1.00, `inferred` 0.55-0.80,
+  `heuristic` 0.25-0.55, `unverified` 0.00-0.20) but only `wrap_username_scan`
+  enforced its ceiling, inline. Measured against the table with the guard
+  removed, **6 of the 15 wrappers emitted a verdict its own confidence could
+  not back**:
+
+  | wrapper | before | violation |
+  | --- | --- | --- |
+  | `wrap_email` full chain | `inferred 0.84` | 0.04 over the ceiling |
+  | `wrap_phone` + numverify | `inferred 0.82` | 0.02 over the ceiling |
+  | `wrap_ip` 2 of 3 sources | `verified 0.82` | under the 0.85 floor |
+  | `wrap_domain` 2 of 4 sources | `verified 0.80` | under the 0.85 floor |
+  | `wrap_username_scan` 3 hits / 40 sites | `inferred 0.469` | inside the *heuristic* band |
+  | `wrap_pipeline` (same scan as weakest link) | `inferred 0.458` | propagated |
+
+  The check lives in `build_trust()`, which every wrapper returns through, so
+  it reaches all fifteen by construction and cannot fall out of step with a
+  newly added one. The two directions are asymmetric on purpose: a confidence
+  above the ceiling is **clamped down**, a confidence below the floor
+  **demotes the verdict** rather than inflating the number — raising a
+  confidence to match its label would have the library assert more than it
+  measured. Demotions are announced (`band_demoted:<from>-><to>`), never
+  silent. `VERDICT_BANDS` is exported.
+
+- **`validate_envelope(envelope) -> list[str]` — the package's own claim, made
+  checkable.** "A verdict never out-claims its source" was something a consumer
+  had to take on faith; it is now an assertion they can run on their own side.
+  Checks the contract — envelope shape, required trust fields and their types, a
+  known verdict, a confidence in 0-1, and the band invariant — and accepts a
+  below-floor confidence when a `context_cap:` warning explains it. Never
+  raises: malformed input is reported, so it is safe on a payload deserialised
+  from JSON or produced by an older version. It deliberately does **not** judge
+  whether the verdict is the *right* one for the data; nothing outside the
+  caller's adapters can know that, and pretending otherwise would be the same
+  overclaim in a new place. Exported.
+
+  Pointed at envelopes produced by the previous release, it independently
+  reports all six band violations listed above (6/6 flagged) from the JSON
+  alone; against this release, 0/6.
+
+- **`trust.reasoning` is now populated by all 15 wrappers, not 1.** The field
+  has existed since 0.1.0 and `build_trust`'s docstring says operators use it
+  "to decide whether to trust or manually re-verify a result" — but only
+  `wrap_username_scan` ever filled it in, so on fourteen of fifteen code paths
+  the documented field was an empty list. Each wrapper now emits up to five
+  ordered bullets naming which sources answered, which signal set the ceiling,
+  and what held the verdict back — including on the invalid-input early returns,
+  where the distinction between "no data" and "a negative result" matters most.
+  Measured on a six-wrapper sample: 1/6 before, 6/6 after.
+
+- `wrap_pipeline`: `extra.sub_modules` (named per-module breakdown) and
+  `extra.weakest_module`. The aggregate verdict is the weakest link's, but
+  `extra.sub_verdicts` was a bare list of verdicts with no names, so a pipeline
+  reporting `heuristic` gave an operator nothing to act on — strengthening the
+  wrong module would not move the number. `sub_verdicts` keeps its historical
+  shape; the breakdown is additive.
+
+- `wrap_pipeline`: unrecognised module names are now named
+  (`pipeline_unmapped_modules:<names>` + a reasoning bullet). Dispatch covers 8
+  of the 15 wrappers, so a legitimate `paste` or `whois` block silently
+  defaulted to `unverified 0.10` and dragged the whole aggregate down, with
+  nothing in the envelope to distinguish "this name is not wired up" from "this
+  lookup failed".
+
+- Tests: `tests/test_envelope_contract.py` (51 tests) — `validate_envelope`
+  against every wrapper × the band grid × every deployment context, its
+  violation and malformed-input paths, the bool-is-not-a-number trap, the
+  deliberate "does not judge the tradecraft" boundary, and `reasoning` as a
+  *reach* test (all wrappers, all inputs, non-empty, ≤5 bullets) rather than
+  spot checks — "one wrapper does it" being the state it exists to end.
+
+- Tests: `tests/test_band_invariant.py` (60 tests) — the invariant over a grid
+  of every wrapper × representative inputs × every deployment context, the six
+  historical violations pinned as regressions, and three *reach* tests: that
+  the grid covers every public wrapper, that every wrapper funnels through
+  `build_trust`, and that the per-wrapper inline copy of the ceiling has not
+  come back. Verified against a control arm (the band table present, the
+  enforcement absent): 6 of 15 wrappers fail, 9 pass.
+
 - README: "Used by" section documenting `wrg_project_osint` integration with
   concrete examples of the zero-hit (clean-negative -> `inferred`) and
   adapter-error (`sites_checked=0` -> `unverified`) conventions.
@@ -48,6 +129,24 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `wrap_username_scan`: the corroboration promotion and the confidence it
+  promoted answered to **different denominators**. Promotion qualified on the
+  *absolute* number of independent platforms (`>= 3`), while confidence was
+  computed from the hit *ratio* (`0.30 + found/checked * 0.25`). On a wide
+  scan those diverge: 3 hits across 40 responding sites cleared the platform
+  bar at confidence 0.469, so the envelope carried an `inferred` label over a
+  number in the *heuristic* band — and scanning **more** sites for the same
+  evidence made the confidence **lower**. Sparse-but-wide is the normal shape
+  of a real username scan (it is exactly what `wrg_project_osint` feeds in),
+  not an edge case. Promotion now additionally requires the boosted confidence
+  to reach the `inferred` floor; when it does not, the verdict holds at
+  `heuristic` and says why (`corroboration_below_inferred_floor` + a reasoning
+  bullet). `_enforce_band` remains the backstop.
+- The `inferred` ceiling was re-implemented inline inside `wrap_username_scan`
+  (added in `8b69524`, *after* the `wrap_email` / `wrap_phone` ladders it was
+  meant to police) and consequently never reached them. That copy is removed
+  in favour of the shared check; the two ladders now read their top rung from
+  `VERDICT_BANDS[INFERRED][1]` instead of hardcoding 0.84 / 0.82.
 - `wrap_breach`: an `email_check` that was **attempted but errored** (not
   skipped, not ok — e.g. a mid-request HIBP timeout) fell through to the
   generic `INFERRED 0.55` branch, silently downgrading a genuinely verified

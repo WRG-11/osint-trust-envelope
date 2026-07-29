@@ -463,7 +463,14 @@ class TestEmailWrapper:
         # role account blocks the 0.84 step, services pump us to 0.78
         assert env["trust"]["confidence"] == 0.78
 
-    def test_full_chain_personal_mailbox_caps_at_084(self):
+    def test_full_chain_personal_mailbox_caps_at_the_top_of_the_inferred_band(self):
+        """The strongest email chain lands at the TOP of the inferred band.
+
+        This rung used to be 0.84 -- four points above the 0.80 ceiling the
+        README publishes for `inferred`, i.e. inside the dead zone between the
+        bands. It now reads the ceiling from ``VERDICT_BANDS`` so the ladder
+        cannot drift past the published contract again.
+        """
         env = t.wrap_email({
             "validation": {
                 "format_valid": True,
@@ -478,7 +485,7 @@ class TestEmailWrapper:
             "services_found": 3,
         })
         assert env["trust"]["verdict"] == t.INFERRED
-        assert env["trust"]["confidence"] == 0.84
+        assert env["trust"]["confidence"] == t.VERDICT_BANDS[t.INFERRED][1] == 0.80
 
     def test_email_never_exceeds_inferred_even_with_everything(self):
         env = t.wrap_email({
@@ -571,14 +578,30 @@ class TestIpWrapper:
         assert env["trust"]["verdict"] == t.VERIFIED
         assert env["trust"]["confidence"] >= 0.90
 
-    def test_two_of_three_is_verified_lower_confidence(self):
+    def test_two_of_three_base_sources_does_not_reach_verified(self):
+        """Two of three base sources lands at the top of `inferred`, not in
+        `verified`.
+
+        It used to report ``verified 0.82`` -- a number in the dead zone
+        between the published bands (`inferred` ends at 0.80, `verified`
+        starts at 0.85), so the label had no confidence range that could back
+        it. Rather than inflate 0.82 up to 0.85 (which would make the library
+        assert more than it measured), the verdict comes down. The demotion is
+        announced in the warnings, never silent.
+
+        Two sources plus corroborating signals still gets there: the sibling
+        `wrap_domain` reaches verified on 2-of-4 once DNSSEC / CT / SSL-deep
+        boosts push the number over 0.85.
+        """
         env = t.wrap_ip({
             "geolocation": {"found": True},
             "rdap": {"found": True},
             "reverse_dns": {},
         })
-        assert env["trust"]["verdict"] == t.VERIFIED
-        assert 0.75 <= env["trust"]["confidence"] < 0.90
+        assert env["trust"]["verdict"] == t.INFERRED
+        assert env["trust"]["confidence"] == t.VERDICT_BANDS[t.INFERRED][1]
+        assert "band_demoted:verified->inferred" in env["trust"]["warnings"]
+        assert "one_source_missing" in env["trust"]["warnings"]
 
     def test_all_failed_is_unverified(self):
         env = t.wrap_ip({"geolocation": {}, "rdap": {}, "reverse_dns": {}})
@@ -1166,7 +1189,7 @@ class TestPipelineWrapper:
                     "geolocation": {"found": True}, "rdap": {"found": True},
                     "reverse_dns": {"hostname": "a.b"},
                 },
-                "email": {  # inferred, top of its band (full chain -> 0.84)
+                "email": {  # inferred, top of its band (full chain -> 0.80)
                     "validation": {
                         "format_valid": True, "mx_reachable": True,
                         "mx_provider": "Google Workspace",
@@ -1194,7 +1217,7 @@ class TestPipelineWrapper:
         assert strong_weak_link["trust"]["verdict"] == t.INFERRED
         assert weaker_weak_link["trust"]["verdict"] == t.INFERRED
         assert strong_weak_link["trust"]["confidence"] > weaker_weak_link["trust"]["confidence"]
-        assert strong_weak_link["trust"]["confidence"] == 0.84
+        assert strong_weak_link["trust"]["confidence"] == 0.80
         assert weaker_weak_link["trust"]["confidence"] == 0.60
 
     def test_unknown_module_name_defaults_to_unverified_confidence(self):
@@ -1244,7 +1267,7 @@ class TestContextCapExtendedToOtherWrappers:
 
     def test_email_default_context_is_unaffected(self):
         env = t.wrap_email(self.EMAIL_STRONG)
-        assert env["trust"]["confidence"] == 0.84
+        assert env["trust"]["confidence"] == 0.80   # was 0.84, above the band
         assert not any(w.startswith("context") for w in env["trust"]["warnings"])
 
     def test_email_gov_context_caps_confidence(self):

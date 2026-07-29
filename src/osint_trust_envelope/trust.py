@@ -30,11 +30,15 @@ Verdict ladder (most trustworthy -> least)
                    was rate-limited, needed a missing API key, or the input
                    was malformed. The honest "we don't know" state.
 
-Confidence 0.0-1.0 is orthogonal to verdict but tracks it roughly:
+Confidence 0.0-1.0 orders results *within* a verdict, and its range per verdict
+is enforced, not advisory (see ``VERDICT_BANDS`` / ``_enforce_band``):
 * verified      -> 0.85 - 1.00
 * inferred      -> 0.55 - 0.80
 * heuristic     -> 0.25 - 0.55
 * unverified    -> 0.00 - 0.20
+
+A number above its band is clamped down; a number below its band demotes the
+verdict rather than inflating the number. Both directions claim less.
 
 The package is stdlib-only. Optional historical-reliability enrichment is a
 pluggable module-level seam (see ``_get_site_confidences`` /
@@ -62,6 +66,23 @@ _CONF_ANCHOR = {
     UNVERIFIED: 0.10,
 }
 
+# The confidence band each verdict is allowed to occupy. This table IS the
+# public contract -- the README's verdict ladder prints exactly these numbers --
+# and ``_enforce_band`` below is the only thing that makes the contract true.
+#
+# The bands are deliberately not contiguous. The gaps (0.20-0.25 and
+# 0.80-0.85) are dead zones: a result that lands there is not "between two
+# verdicts", it is a wrapper that computed a number its own label cannot back.
+VERDICT_BANDS: dict[str, tuple[float, float]] = {
+    VERIFIED: (0.85, 1.00),
+    INFERRED: (0.55, 0.80),
+    HEURISTIC: (0.25, 0.55),
+    UNVERIFIED: (0.00, 0.20),
+}
+
+# Verdicts strongest-first, for the demotion search in ``_enforce_band``.
+_VERDICTS_STRONGEST_FIRST = (VERIFIED, INFERRED, HEURISTIC, UNVERIFIED)
+
 # Human-readable labels for a UI legend.
 VERDICT_LABELS = {
     VERIFIED: "Verified",
@@ -80,6 +101,84 @@ VERDICT_DESCRIPTIONS = {
 
 def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def _enforce_band(
+    verdict: str,
+    confidence: float,
+    warnings: list[str] | None = None,
+) -> tuple[str, float]:
+    """Never let a verdict label out-claim its own confidence number.
+
+    Two violations are possible and they are **not** symmetric:
+
+    * confidence ABOVE the band ceiling -> clamp the NUMBER down. The verdict
+      tier is the ceiling the source type can support; a number above it is an
+      overclaim, and lowering it costs nothing.
+    * confidence BELOW the band floor -> demote the VERDICT. Raising the number
+      to meet the label would have the library assert more than it measured,
+      which is the exact failure this package exists to prevent. So the label
+      comes down to the band the number actually lands in.
+
+    Both directions move toward claiming LESS. That asymmetry is the point: a
+    naive "clamp into range" would satisfy the invariant while silently
+    inflating confidences, turning the guard into an overclaim generator.
+
+    Why this lives in :func:`build_trust` rather than in the wrappers: every
+    one of the fifteen ``wrap_*`` functions returns through ``build_trust``, so
+    enforcing here reaches all of them by construction and cannot drift out of
+    sync with a newly added wrapper. Before this existed the band was enforced
+    in exactly one wrapper (``wrap_username_scan``, added in 8b69524 *after*
+    the ladders it was meant to police) and measurably failed to reach the
+    rest.
+
+    Measured 2026-07-29, before this function existed:
+
+    ==============================  ========================================
+    ``wrap_email`` full chain       ``inferred 0.84``  (ceiling is 0.80)
+    ``wrap_phone`` + numverify      ``inferred 0.82``  (ceiling is 0.80)
+    ``wrap_username_scan`` 3 of 40  ``inferred 0.469`` (floor is 0.55 -- that
+                                    number is inside the *heuristic* band)
+    ==============================  ========================================
+    """
+    conf = _clamp(confidence)
+    if verdict not in VERDICT_BANDS:
+        return verdict, conf
+
+    # A deployment-context cap is a POLICY reduction, not an evidence
+    # reduction: `gov` lowers the number it is willing to print, it does not
+    # un-observe the RDAP response behind a `verified`. Demoting there would
+    # destroy the one fact the operator most needs (the source was
+    # authoritative) and would contradict the published contract, which states
+    # the cap "only affects confidence, never the verdict tier itself".
+    # So the FLOOR is waived once a context cap has fired; the CEILING is not,
+    # because clamping down can never overclaim.
+    policy_capped = any(w.startswith("context_cap:") for w in (warnings or ()))
+
+    low, high = VERDICT_BANDS[verdict]
+    if conf > high:
+        if warnings is not None:
+            warnings.append(f"band_cap:{verdict}:{high:.2f}")
+        return verdict, high
+    if conf < low and not policy_capped:
+        # Pick the strongest verdict whose band can actually hold this number.
+        # A confidence in a DEAD ZONE (e.g. 0.82, below `verified`'s 0.85 floor
+        # but above `inferred`'s 0.80 ceiling) belongs to no band at all, so the
+        # demotion target's ceiling has to be applied as well -- searching by
+        # floor alone lands right back out of band, which is the bug the first
+        # cut of this function shipped with.
+        demoted, demoted_conf = UNVERIFIED, VERDICT_BANDS[UNVERIFIED][1]
+        for candidate in _VERDICTS_STRONGEST_FIRST:
+            c_low, c_high = VERDICT_BANDS[candidate]
+            if c_low <= conf:
+                demoted, demoted_conf = candidate, min(conf, c_high)
+                break
+        if warnings is not None:
+            warnings.append(f"band_demoted:{verdict}->{demoted}")
+            if demoted_conf != conf:
+                warnings.append(f"band_cap:{demoted}:{demoted_conf:.2f}")
+        return demoted, demoted_conf
+    return verdict, conf
 
 
 # -- Optional per-site confidence enrichment (pluggable seam) ----------------
@@ -148,12 +247,17 @@ def build_trust(
         verdict = UNVERIFIED
     if confidence is None:
         confidence = _CONF_ANCHOR[verdict]
+    # Single choke point: every wrap_* function returns through here, so the
+    # band invariant is enforced once and reaches all of them. See
+    # ``_enforce_band`` for why a floor violation demotes rather than inflates.
+    warn_list = list(warnings or [])
+    verdict, confidence = _enforce_band(verdict, confidence, warn_list)
     block: dict[str, Any] = {
         "verdict": verdict,
-        "confidence": round(_clamp(confidence), 3),
+        "confidence": round(confidence, 3),
         "method": method,
         "source": source,
-        "warnings": list(warnings or []),
+        "warnings": warn_list,
         "errors": list(errors or []),
         "reasoning": list(reasoning or []),
     }
@@ -172,6 +276,94 @@ def envelope(result: Any, trust: dict[str, Any]) -> dict[str, Any]:
     read it directly via ``response.result.<field>``.
     """
     return {"result": result, "trust": trust}
+
+
+# Keys every trust block carries, and the type each one promises.
+_TRUST_LIST_FIELDS = ("warnings", "errors", "reasoning")
+
+
+def validate_envelope(envelope_: Any) -> list[str]:
+    """Return the contract violations in a trust envelope; empty means clean.
+
+    The package's claim is that a verdict never out-claims its source. That
+    claim is only worth anything if a consumer can *check* it, so this turns it
+    into an assertion the caller can run on their own side:
+
+        >>> from osint_trust_envelope import validate_envelope, wrap_domain
+        >>> validate_envelope(wrap_domain({"rdap": {"found": True}}))
+        []
+
+    It is written to be safe on anything -- a hand-built dict, a payload
+    deserialised from JSON, an envelope produced by an older version of this
+    package -- so it never raises on malformed input; it reports.
+
+    What is checked is the *contract*, not the tradecraft: envelope shape,
+    required trust fields and their types, a known verdict, a confidence in
+    0-1, and the band invariant (:data:`VERDICT_BANDS`). A confidence below its
+    band floor is accepted when a ``context_cap:`` warning explains it, because
+    a deployment-context cap lowers the number as policy rather than evidence.
+
+    What is deliberately NOT checked: whether the verdict is the *right* one
+    for the data. Nothing outside the caller's own adapters can know that, and
+    a validator that pretended otherwise would be the same overclaim in a new
+    place.
+    """
+    problems: list[str] = []
+
+    if not isinstance(envelope_, dict):
+        return [f"envelope is {type(envelope_).__name__}, expected dict"]
+    if "result" not in envelope_:
+        problems.append("missing 'result' key")
+    trust = envelope_.get("trust")
+    if not isinstance(trust, dict):
+        problems.append(
+            f"'trust' is {type(trust).__name__}, expected dict")
+        return problems
+
+    for field in ("verdict", "confidence", "method", "source"):
+        if field not in trust:
+            problems.append(f"trust.{field} is missing")
+    for field in _TRUST_LIST_FIELDS:
+        value = trust.get(field)
+        if field not in trust:
+            problems.append(f"trust.{field} is missing")
+        elif not isinstance(value, list):
+            problems.append(
+                f"trust.{field} is {type(value).__name__}, expected list")
+        elif not all(isinstance(v, str) for v in value):
+            problems.append(f"trust.{field} must contain only strings")
+
+    verdict = trust.get("verdict")
+    if verdict is not None and verdict not in VALID_VERDICTS:
+        problems.append(
+            f"trust.verdict {verdict!r} is not one of "
+            f"{sorted(VALID_VERDICTS)}")
+
+    conf = trust.get("confidence")
+    if not isinstance(conf, (int, float)) or isinstance(conf, bool):
+        if "confidence" in trust:
+            problems.append(
+                f"trust.confidence is {type(conf).__name__}, expected a number")
+        return problems
+    if not 0.0 <= conf <= 1.0:
+        problems.append(f"trust.confidence {conf} is outside 0.0-1.0")
+        return problems
+
+    if verdict in VERDICT_BANDS:
+        low, high = VERDICT_BANDS[verdict]
+        raw_warnings = trust.get("warnings")
+        warns: tuple[Any, ...] = tuple(raw_warnings) if isinstance(raw_warnings, list) else ()
+        policy_capped = any(
+            isinstance(w, str) and w.startswith("context_cap:") for w in warns)
+        if conf > high:
+            problems.append(
+                f"trust.confidence {conf} exceeds the {verdict} ceiling {high}")
+        elif conf < low and not policy_capped:
+            problems.append(
+                f"trust.confidence {conf} is below the {verdict} floor {low} "
+                f"and no context_cap warning explains it")
+
+    return problems
 
 
 # -- Per-adapter wrappers ----------------------------------------------------
@@ -530,13 +722,33 @@ def wrap_username_scan(
             # Significant boost on a still-heuristic verdict promotes to
             # inferred — but only when there is no contradiction flag and
             # the boost clears the context-specific minimum.
+            #
+            # The promotion test and the confidence must answer to the SAME
+            # yardstick. The boost qualifies on the ABSOLUTE number of
+            # independent platforms; ``conf`` is computed from the hit RATIO.
+            # On a wide scan those diverge badly: 3 hits across 40 responding
+            # sites cleared the 3-platform bar while the confidence sat at
+            # 0.469 -- a number inside the *heuristic* band. Promoting there
+            # printed an 'inferred' label over a heuristic number, which is
+            # the overclaim this package exists to prevent. Sparse-but-wide is
+            # the normal shape of a real username scan, not an edge case.
+            inferred_floor = VERDICT_BANDS[INFERRED][0]
             if verdict == HEURISTIC and corroboration_boost >= promotion_boost_min and not contradiction:
-                verdict = INFERRED
-                warnings.append("cross_adapter_corroboration_promotion")
-                reasoning.append(
-                    f"Promoted heuristic -> inferred on strong cross-adapter agreement "
-                    f"(boost {corroboration_boost:.2f} >= context floor {promotion_boost_min:.2f})."
-                )
+                if conf >= inferred_floor:
+                    verdict = INFERRED
+                    warnings.append("cross_adapter_corroboration_promotion")
+                    reasoning.append(
+                        f"Promoted heuristic -> inferred on strong cross-adapter agreement "
+                        f"(boost {corroboration_boost:.2f} >= context floor {promotion_boost_min:.2f})."
+                    )
+                else:
+                    warnings.append("corroboration_below_inferred_floor")
+                    reasoning.append(
+                        f"Cross-adapter agreement cleared the boost floor "
+                        f"({corroboration_boost:.2f} >= {promotion_boost_min:.2f}) but the resulting "
+                        f"confidence {conf:.3f} stays under the 'inferred' band floor "
+                        f"{inferred_floor:.2f} - verdict held at heuristic."
+                    )
 
     if err_count > 0:
         warnings.append(f"{err_count}_sites_errored")
@@ -547,12 +759,10 @@ def wrap_username_scan(
     # Context confidence cap: a permissive scan in a gov/strict deployment
     # must not claim more trust than the context permits.
     conf = _apply_context_cap(conf, context, warnings, reasoning)
-    # Keep 'inferred' within its documented confidence band (<= 0.80) even when
-    # a permissive context cap would allow more: 404-derived corroboration never
-    # earns verified-tier confidence. The verdict ceiling itself is unchanged.
-    if verdict == INFERRED and conf > 0.80:
-        warnings.append("inferred_band_cap:0.80")
-        conf = 0.80
+    # The 'inferred' ceiling used to be re-implemented here, inline, and only
+    # here -- which is exactly why wrap_email and wrap_phone drifted past it.
+    # It now lives in _enforce_band(), applied by build_trust() for every
+    # wrapper. Nothing replaces it at this spot on purpose.
     if anomalies:
         high = [a for a in anomalies if a.get("direction") == "high"]
         low = [a for a in anomalies if a.get("direction") == "low"]
@@ -615,7 +825,7 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         format + MX + DMARC=quarantine|reject        → inferred   0.70
         + Gravatar/GitHub/Keybase hit (services>0)   → inferred   0.78
         + provider + DMARC strict + services>0
-            + not disposable + not role              → inferred   0.84
+            + not disposable + not role              → inferred   0.80
 
     Hard cap: ``inferred``. We never reach ``verified`` because:
         * an MX record proves the domain accepts mail, not that THIS mailbox
@@ -667,6 +877,10 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 source="local format check",
                 warnings=mandatory_warnings,
                 errors=errors,
+                reasoning=[
+                    "Address failed the RFC-5322 format check - no lookup was "
+                    "attempted, so this is 'no data', not 'no mailbox'.",
+                ],
                 extra={
                     "format_valid": False,
                     "mx_reachable": False,
@@ -696,7 +910,10 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
             and dmarc_strict
             and services_found > 0
         ):
-            conf = max(conf, 0.84)
+            # Top of the inferred band, read from the band table rather than
+            # hardcoded: this rung used to be 0.84, four points ABOVE the
+            # ceiling the README publishes, and nothing caught it.
+            conf = max(conf, VERDICT_BANDS[INFERRED][1])
     else:
         warnings.append("mx_lookup_failed_or_unreachable")
 
@@ -716,6 +933,40 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         warnings.append("mx_inferred_from_a_record_fallback")
     if raw.get("breach_summary") is None and format_valid:
         warnings.append("breach_check_skipped_or_unavailable")
+
+    # Why this verdict came out, in the order the ladder climbed it.
+    reasoning: list[str] = []
+    if mx_reachable:
+        reasoning.append(
+            f"MX resolves ({len(mx_records)} record(s), provider "
+            f"{mx_provider or 'unrecognised'}) - the domain accepts mail."
+        )
+    else:
+        reasoning.append(
+            "No MX reachable - the domain may not accept mail at all.")
+    if dmarc_present:
+        reasoning.append(
+            f"DMARC policy '{dmarc_policy or 'none'}'"
+            + (" is enforcing - the domain is actively administered."
+               if dmarc_strict else
+               " is monitor-only - there is no enforcement to lean on.")
+        )
+    else:
+        reasoning.append(
+            "No DMARC record - nothing corroborates how the domain is run.")
+    if services_found > 0:
+        reasoning.append(
+            f"{services_found} external service(s) recognised this address.")
+    blockers = [
+        label for label, hit in
+        (("disposable provider", disposable), ("role account", is_role))
+        if hit
+    ]
+    if blockers:
+        reasoning.append(
+            f"Held below the top rung: {' + '.join(blockers)}.")
+    reasoning.append(
+        "Mailbox existence is not observable from outside - hard ceiling: inferred.")
 
     warnings = mandatory_warnings + warnings
     conf = _apply_context_cap(conf, context, warnings)
@@ -744,6 +995,7 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
             source="Google DoH + Gravatar + GitHub + HIBP",
             warnings=warnings,
             errors=errors,
+            reasoning=reasoning[:5],
             extra=extra,
         ),
     )
@@ -757,7 +1009,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         libphonenumber parse        → heuristic 0.55
         + 1 messenger presence hit  → inferred  0.66
         + 2 messenger presence hits → inferred  0.74
-        + Numverify API confirmed   → inferred  0.82  (still capped — MNP)
+        + Numverify API confirmed   → inferred  0.80  (top of band — MNP)
 
     The verdict NEVER becomes ``verified`` because:
         * libphonenumber's "carrier" is the original prefix allocation,
@@ -788,6 +1040,10 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 source="libphonenumber" if used_libphonenumber else "local regex tables",
                 warnings=warnings,
                 errors=errors,
+                reasoning=[
+                    "The number did not parse - no enrichment was attempted, so "
+                    "this is 'unparseable input', not 'unused number'.",
+                ],
                 extra={
                     "valid_format": False,
                     "enrichment_source": enrichment_source,
@@ -838,7 +1094,10 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     reverse = raw.get("reverse_lookup", {}) or {}
     if reverse.get("lookup_done"):
         verdict = INFERRED
-        conf = max(conf, 0.82)
+        # Top of the inferred band (was a hardcoded 0.82, i.e. two points over
+        # the published ceiling). A reverse lookup is the strongest phone
+        # signal there is, so it earns the top of the band -- and no more.
+        conf = max(conf, VERDICT_BANDS[INFERRED][1])
         warnings.append("numverify_api_confirmed")
         # Drop the now-stale prefix-only caveats — we have a real carrier.
         for w in (
@@ -851,6 +1110,27 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         warnings.append("carrier_from_third_party_api_may_be_stale")
     elif reverse.get("skipped_reason"):
         warnings.append(f"reverse_lookup_skipped:{reverse.get('skipped_reason')}")
+
+    reasoning: list[str] = [
+        f"Number parsed via {'libphonenumber' if used_libphonenumber else 'the regex fallback'}"
+        + (f" ({parsed.get('country_code')})." if parsed.get("country_code") else ".")
+    ]
+    if hit_count:
+        reasoning.append(
+            f"{hit_count} messenger presence hit(s) "
+            f"({', '.join(str(s.get('platform')) for s in hits)}) - the number is "
+            f"reachable and in use, which is not the same as knowing who holds it."
+        )
+    else:
+        reasoning.append(
+            "No messenger presence - nothing external corroborates that the "
+            "number is in use.")
+    if reverse.get("lookup_done"):
+        reasoning.append(
+            "A reverse lookup returned a CURRENT carrier, which beats the "
+            "prefix allocation - but a carrier is still not an identity.")
+    reasoning.append(
+        "Number portability breaks prefix-to-carrier inference - hard ceiling: inferred.")
 
     conf = _apply_context_cap(conf, context, warnings)
 
@@ -871,6 +1151,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                     else "local regex tables"),
             warnings=warnings,
             errors=errors,
+            reasoning=reasoning[:5],
             extra={
                 "valid_format": valid_format,
                 "enrichment_source": enrichment_source,
@@ -969,6 +1250,32 @@ def wrap_ip(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any
     # Mandatory honesty disclaimers — always present so consumers can't forget
     warnings.append("ip_geolocation_is_isp_level_not_user_level")
 
+    answered = [
+        label for label, hit in
+        (("geolocation", geo_found), ("RDAP", rdap_found),
+         ("reverse DNS", bool(rdns_hostname)))
+        if hit
+    ]
+    reasoning: list[str] = [
+        f"{successful} of 3 base sources answered"
+        + (f" ({', '.join(answered)})." if answered else " - none of them.")
+    ]
+    if is_tor:
+        reasoning.append(
+            "The address is on a published Tor exit list - an authoritative "
+            "membership fact, independent of whether the other lookups worked.")
+    if dnsbl_listed:
+        reasoning.append(
+            f"Listed on {len(dnsbl_hits)} blocklist(s) - reputational context, "
+            f"deliberately not folded into the confidence.")
+    if asn_class in ("cloud", "hosting", "mobile"):
+        reasoning.append(
+            f"ASN classified as {asn_class}"
+            + (f" ({asn_label})" if asn_label else "")
+            + " - shapes who is likely behind the address.")
+    reasoning.append(
+        "Geolocation resolves to the ISP, never to a person.")
+
     conf = _apply_context_cap(conf, context, warnings)
 
     return envelope(
@@ -980,6 +1287,7 @@ def wrap_ip(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any
             source="ip-api.com + rdap.org + local DNS + check.torproject.org + DNSBLs",
             warnings=warnings,
             errors=[],
+            reasoning=reasoning[:5],
             extra={
                 "geolocation_found": geo_found,
                 "rdap_found": rdap_found,
@@ -1130,6 +1438,36 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
     # Mandatory honesty disclaimer — registrar / WHOIS data is often redacted
     warnings.append("registrar_data_may_be_privacy_redacted")
 
+    answered = [
+        label for label, hit in
+        (("DNS", has_dns), ("RDAP", rdap_found), ("SSL", has_ssl),
+         ("HTTP", http_reachable))
+        if hit
+    ]
+    boosts = [
+        label for label, hit in
+        (("DNSSEC validated", dnssec_validated), ("CT log history", ct_count > 0),
+         ("healthy TLS", ssl_deep_healthy))
+        if hit
+    ]
+    reasoning: list[str] = [
+        f"{successful} of 4 base sources answered"
+        + (f" ({', '.join(answered)})." if answered else " - none of them.")
+    ]
+    if boosts:
+        reasoning.append(
+            f"Corroborated by {', '.join(boosts)} - hard-to-forge signals that "
+            f"lift the confidence above the base ladder.")
+    if ct_count > 0:
+        reasoning.append(
+            f"Certificate transparency exposed {ct_count} subdomain name(s).")
+    if has_ssl and ssl_expiry_status in ("expired", "critical"):
+        reasoning.append(
+            f"Certificate is {ssl_expiry_status} ({ssl_days_to_expiry} days) - "
+            f"the domain is authoritative but not well maintained.")
+    reasoning.append(
+        "Authoritative for the DOMAIN; registrar contact data is routinely redacted.")
+
     conf = _apply_context_cap(conf, context, warnings)
 
     return envelope(
@@ -1141,6 +1479,7 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
             source="local DNS + rdap.org + SSL handshake + HTTP GET + crt.sh + dns.google",
             warnings=warnings,
             errors=[],
+            reasoning=reasoning[:5],
             extra={
                 "dns_found": has_dns,
                 "rdap_found": rdap_found,
@@ -1225,6 +1564,27 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         verdict, conf = INFERRED, 0.55
 
+    reasoning: list[str] = []
+    if pw_ok:
+        reasoning.append(
+            "The HIBP k-anonymity password check completed - a cryptographic "
+            "range query, not a heuristic, which is why this wrapper may reach "
+            "verified at all.")
+    else:
+        reasoning.append("No password check completed.")
+    if em_ok:
+        reasoning.append("The HIBP v3 email-breach lookup completed.")
+    elif em_skipped:
+        reasoning.append(
+            "The email-breach lookup was skipped - that path needs a paid HIBP "
+            "key, so its absence is a missing capability, not a clean result.")
+    elif em_attempted_but_inconclusive:
+        reasoning.append(
+            "The email-breach lookup was attempted and did not conclude; it is "
+            "treated as no email data rather than as a negative.")
+    if not hibp_key:
+        reasoning.append("No HIBP_API_KEY present in this environment.")
+
     return envelope(
         raw,
         build_trust(
@@ -1234,6 +1594,7 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
             source="haveibeenpwned.com",
             warnings=warnings,
             errors=errors,
+            reasoning=reasoning[:5],
             extra={
                 "password_checked": pw_ok,
                 "email_checked": em_ok,
@@ -1276,6 +1637,13 @@ def wrap_avatar(raw: dict[str, Any]) -> dict[str, Any]:
             source="Gravatar + unavatar.io",
             warnings=warnings,
             errors=[],
+            reasoning=[
+                "A profile image was served for at least one identifier."
+                if found_any else
+                "No identifier returned a profile image.",
+                "An image existing at an address says nothing about who owns "
+                "it - correlation here is probabilistic, so the ceiling is inferred.",
+            ],
             extra={"any_found": found_any},
         ),
     )
@@ -1294,12 +1662,23 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
     if gh_found:
         verdict, conf = INFERRED, 0.70
         warnings.append("github_verified_social_heuristic")
+        reasoning = [
+            "The GitHub org resolved through the real API - an authoritative hit.",
+            "The social-presence half is still 404-scraped, so the weaker half "
+            "sets the ceiling for the pair.",
+        ]
     elif raw.get("domain"):
         verdict, conf = HEURISTIC, 0.40
         warnings.append("no_github_org_social_presence_inferred_from_404")
+        reasoning = [
+            "No GitHub org; only a domain was supplied.",
+            "Everything left rests on 404-based social scraping, where false "
+            "positives are expected.",
+        ]
     else:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("no_data_sources_responded")
+        reasoning = ["Neither a GitHub org nor a domain was available to check."]
 
     return envelope(
         raw,
@@ -1310,6 +1689,7 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
             source="api.github.com + social platforms",
             warnings=warnings,
             errors=errors,
+            reasoning=reasoning,
             extra={"github_org_found": gh_found},
         ),
     )
@@ -1330,6 +1710,12 @@ def wrap_name(raw: dict[str, Any]) -> dict[str, Any]:
                 "username_candidates_not_verified",
                 "feed_to_username_scan_for_verification",
             ],
+            reasoning=[
+                "Nothing was looked up: this wrapper only expands a name into "
+                "candidate handles from local pattern tables.",
+                "The candidates are input for a scan, not findings - treating "
+                "them as results would be inventing evidence.",
+            ],
         ),
     )
 
@@ -1347,6 +1733,12 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
                 confidence=0.93,
                 method="rdap_http_api",
                 source="rdap.org",
+                reasoning=[
+                    "RDAP answered over its real HTTP API - registry data, not "
+                    "an inference.",
+                    "Registrant contact fields are frequently privacy-redacted, "
+                    "so 'authoritative' covers the registration, not the person.",
+                ],
             ),
         )
     return envelope(
@@ -1357,6 +1749,10 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
             method="rdap_http_api",
             source="rdap.org",
             warnings=["rdap_lookup_failed"],
+            reasoning=[
+                "RDAP returned nothing usable - the honest state is 'no data', "
+                "which is not evidence the domain is unregistered.",
+            ],
         ),
     )
 
@@ -1374,6 +1770,13 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
                 confidence=0.96,
                 method="ssl_socket_handshake",
                 source="direct TLS handshake",
+                reasoning=[
+                    "A TLS handshake completed and the peer presented a "
+                    "certificate - directly observed, not reported by a third "
+                    "party.",
+                    "The certificate is authoritative for what it attests; it "
+                    "says nothing about who operates the host.",
+                ],
             ),
         )
     return envelope(
@@ -1384,6 +1787,10 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
             method="ssl_socket_handshake",
             source="direct TLS handshake",
             warnings=["ssl_handshake_failed_or_no_cert"],
+            reasoning=[
+                "No handshake and no certificate - the host may be reachable "
+                "without TLS, or not reachable at all; this cannot tell them apart.",
+            ],
         ),
     )
 
@@ -1404,6 +1811,15 @@ def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         verdict, conf = INFERRED, 0.55
 
+    reasoning = [
+        f"{count} hit(s) across the paste/leak sources."
+        if count else
+        "No source returned a hit - absence here is weak, since these indexes "
+        "are partial by nature.",
+        "A string appearing in a paste is not attribution; every hit needs a "
+        "human relevance call, which is why the ceiling is inferred.",
+    ]
+
     return envelope(
         raw,
         build_trust(
@@ -1412,6 +1828,7 @@ def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
             method="github_api + grep_app + google_scrape",
             source="GitHub + grep.app + Google",
             warnings=warnings,
+            reasoning=reasoning,
             extra={"hit_count": count},
         ),
     )
@@ -1431,6 +1848,13 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
                 method="local_binary_parse",
                 source="local filesystem",
                 warnings=["exif_can_be_spoofed_or_stripped"],
+                reasoning=[
+                    "Parsed from the file on disk - deterministic, repeatable, "
+                    "and dependent on no third party, which is why a local read "
+                    "outranks every networked wrapper here.",
+                    "Authoritative for what the file CLAIMS: EXIF can be edited "
+                    "or stripped before the file ever reached you.",
+                ],
             ),
         )
     return envelope(
@@ -1441,6 +1865,10 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
             method="local_binary_parse",
             source="local filesystem",
             errors=[raw.get("error", "no_metadata_extracted")] if raw.get("error") else [],
+            reasoning=[
+                "Nothing was extracted - either the format carries no metadata "
+                "or it was stripped; this cannot distinguish the two.",
+            ],
         ),
     )
 
@@ -1461,6 +1889,11 @@ def wrap_generic(
             method=method,
             source=source,
             warnings=warnings or [],
+            reasoning=[
+                f"No dedicated wrapper covers this source, so the verdict is "
+                f"whatever the caller asserted ({verdict}) rather than anything "
+                f"this package derived.",
+            ],
         ),
     )
 
@@ -1473,8 +1906,12 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     mods = raw.get("modules", {}) or {}
-    # (verdict, confidence) per sub-module, in insertion order.
-    sub_results: list[tuple[str, float]] = []
+    # (name, verdict, confidence) per sub-module, in insertion order. The name
+    # is carried because the aggregate verdict is meaningless without it: a
+    # pipeline that reports `heuristic` tells the operator nothing actionable
+    # unless it also says WHICH link was the weak one.
+    sub_results: list[tuple[str, str, float]] = []
+    unmapped: list[str] = []
 
     # Inspect each sub-module and compute a mini-verdict for it.
     for name, sub in mods.items():
@@ -1497,11 +1934,18 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
         elif name == "company":
             tb = wrap_company(sub)["trust"]
         else:
+            # No dispatch entry for this module name. The result is
+            # `unverified`, which then drags the whole aggregate down -- and
+            # before the reasoning below existed, it did so silently: the
+            # operator saw an unverified pipeline with no way to tell that the
+            # cause was an unrecognised NAME rather than a failed lookup.
+            unmapped.append(str(name))
             tb = {"verdict": UNVERIFIED, "confidence": _CONF_ANCHOR[UNVERIFIED]}
-        sub_results.append((tb["verdict"], tb["confidence"]))
+        sub_results.append((str(name), tb["verdict"], tb["confidence"]))
 
-    sub_verdicts = [v for v, _ in sub_results]
+    sub_verdicts = [v for _, v, _ in sub_results]
 
+    weakest_module: str | None = None
     if not sub_verdicts:
         overall = UNVERIFIED
         conf = _CONF_ANCHOR[UNVERIFIED]
@@ -1516,9 +1960,35 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
         # whose weak link is a strong 'inferred' (0.79) is meaningfully
         # more trustworthy than one whose weak link barely cleared
         # 'inferred' (0.56) -- both previously reported the same number.
-        conf = min(c for v, c in sub_results if v == overall)
+        weakest = min(
+            ((n, v, c) for n, v, c in sub_results if v == overall),
+            key=lambda t: t[2],
+        )
+        weakest_module, conf = weakest[0], weakest[2]
 
     warnings = ["pipeline_verdict_equals_weakest_submodule"]
+    if unmapped:
+        warnings.append(f"pipeline_unmapped_modules:{','.join(sorted(unmapped))}")
+
+    if weakest_module is None:
+        reasoning = [
+            "No sub-module produced a result, so the pipeline has nothing to "
+            "aggregate - 'unverified' here means empty, not negative.",
+        ]
+    else:
+        reasoning = [
+            f"{len(sub_results)} sub-module(s) ran: "
+            + ", ".join(f"{n}={v} {c}" for n, v, c in sub_results) + ".",
+            f"'{weakest_module}' is the weak link at {overall} {conf} and sets "
+            f"the aggregate - a chain is worth its weakest evidence, so "
+            f"strengthening any other module will not move this number.",
+        ]
+        if unmapped:
+            reasoning.append(
+                f"{len(unmapped)} module name(s) have no dispatch entry "
+                f"({', '.join(sorted(unmapped))}) and defaulted to unverified - "
+                f"that is an unrecognised NAME, not a failed lookup."
+            )
 
     return envelope(
         raw,
@@ -1528,9 +1998,18 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
             method="multi_module_pipeline",
             source="aggregated",
             warnings=warnings,
+            reasoning=reasoning,
             extra={
                 "sub_verdicts": sub_verdicts,
                 "module_count": len(sub_verdicts),
+                # Named breakdown: `sub_verdicts` keeps its historical shape
+                # (a bare list) for existing consumers, but a bare list cannot
+                # answer "which module was it".
+                "sub_modules": [
+                    {"module": n, "verdict": v, "confidence": c}
+                    for n, v, c in sub_results
+                ],
+                "weakest_module": weakest_module,
             },
         ),
     )
