@@ -123,6 +123,49 @@ bare green checkmark.
 
 ---
 
+## Checking an envelope
+
+Every result also explains itself. `trust.reasoning` carries a short, ordered
+account of *why* the verdict came out that way - which sources answered, which
+signal set the ceiling, what held it back:
+
+```python
+from osint_trust_envelope import wrap_ip
+
+env = wrap_ip({"geolocation": {"found": True}, "rdap": {"found": True},
+               "reverse_dns": {}})
+
+env["trust"]["verdict"]    # -> "inferred"  (2 of 3 does not clear the verified floor)
+env["trust"]["reasoning"]  # -> ["2 of 3 base sources answered (geolocation, RDAP).",
+                           #     "Geolocation resolves to the ISP, never to a person."]
+```
+
+And the contract itself is checkable. `validate_envelope` returns the list of
+violations in an envelope - shape, required fields and their types, a known
+verdict, and the band invariant - so a consumer can assert on the guarantee
+rather than trust it:
+
+```python
+from osint_trust_envelope import validate_envelope
+
+validate_envelope(env)          # -> []   (clean)
+
+validate_envelope({"result": {}, "trust": {
+    "verdict": "verified", "confidence": 0.40, "method": "m", "source": "s",
+    "warnings": [], "errors": [], "reasoning": []}})
+# -> ['trust.confidence 0.4 is below the verified floor 0.85 and no
+#     context_cap warning explains it']
+```
+
+It never raises - malformed input is reported, not thrown - so it is safe on a
+payload deserialised from JSON or produced by an older version of this package.
+
+It deliberately does **not** judge whether the verdict is the *right* one for
+your data. Nothing outside your own adapters can know that, and a validator
+that pretended otherwise would be the same overclaim in a new place.
+
+---
+
 ## Used by
 
 ### `wrg_project_osint` — token-project OSINT aggregator

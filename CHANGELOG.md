@@ -37,6 +37,53 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   measured. Demotions are announced (`band_demoted:<from>-><to>`), never
   silent. `VERDICT_BANDS` is exported.
 
+- **`validate_envelope(envelope) -> list[str]` — the package's own claim, made
+  checkable.** "A verdict never out-claims its source" was something a consumer
+  had to take on faith; it is now an assertion they can run on their own side.
+  Checks the contract — envelope shape, required trust fields and their types, a
+  known verdict, a confidence in 0-1, and the band invariant — and accepts a
+  below-floor confidence when a `context_cap:` warning explains it. Never
+  raises: malformed input is reported, so it is safe on a payload deserialised
+  from JSON or produced by an older version. It deliberately does **not** judge
+  whether the verdict is the *right* one for the data; nothing outside the
+  caller's adapters can know that, and pretending otherwise would be the same
+  overclaim in a new place. Exported.
+
+  Pointed at envelopes produced by the previous release, it independently
+  reports all six band violations listed above (6/6 flagged) from the JSON
+  alone; against this release, 0/6.
+
+- **`trust.reasoning` is now populated by all 15 wrappers, not 1.** The field
+  has existed since 0.1.0 and `build_trust`'s docstring says operators use it
+  "to decide whether to trust or manually re-verify a result" — but only
+  `wrap_username_scan` ever filled it in, so on fourteen of fifteen code paths
+  the documented field was an empty list. Each wrapper now emits up to five
+  ordered bullets naming which sources answered, which signal set the ceiling,
+  and what held the verdict back — including on the invalid-input early returns,
+  where the distinction between "no data" and "a negative result" matters most.
+  Measured on a six-wrapper sample: 1/6 before, 6/6 after.
+
+- `wrap_pipeline`: `extra.sub_modules` (named per-module breakdown) and
+  `extra.weakest_module`. The aggregate verdict is the weakest link's, but
+  `extra.sub_verdicts` was a bare list of verdicts with no names, so a pipeline
+  reporting `heuristic` gave an operator nothing to act on — strengthening the
+  wrong module would not move the number. `sub_verdicts` keeps its historical
+  shape; the breakdown is additive.
+
+- `wrap_pipeline`: unrecognised module names are now named
+  (`pipeline_unmapped_modules:<names>` + a reasoning bullet). Dispatch covers 8
+  of the 15 wrappers, so a legitimate `paste` or `whois` block silently
+  defaulted to `unverified 0.10` and dragged the whole aggregate down, with
+  nothing in the envelope to distinguish "this name is not wired up" from "this
+  lookup failed".
+
+- Tests: `tests/test_envelope_contract.py` (51 tests) — `validate_envelope`
+  against every wrapper × the band grid × every deployment context, its
+  violation and malformed-input paths, the bool-is-not-a-number trap, the
+  deliberate "does not judge the tradecraft" boundary, and `reasoning` as a
+  *reach* test (all wrappers, all inputs, non-empty, ≤5 bullets) rather than
+  spot checks — "one wrapper does it" being the state it exists to end.
+
 - Tests: `tests/test_band_invariant.py` (60 tests) — the invariant over a grid
   of every wrapper × representative inputs × every deployment context, the six
   historical violations pinned as regressions, and three *reach* tests: that

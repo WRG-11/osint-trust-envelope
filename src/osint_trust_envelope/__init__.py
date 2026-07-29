@@ -27,6 +27,7 @@ from .trust import (
     # cross-scan corroboration
     corroborate_identities,
     envelope,
+    validate_envelope,
     wrap_avatar,
     wrap_breach,
     wrap_company,
@@ -61,6 +62,7 @@ __all__ = [
     "build_trust",
     "corroborate_identities",
     "envelope",
+    "validate_envelope",
     "wrap_avatar",
     "wrap_breach",
     "wrap_company",
