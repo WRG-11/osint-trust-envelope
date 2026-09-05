@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this library in research or writing, please cite it as below."
+title: "osint-trust-envelope"
+abstract: >-
+  Per-source-type epistemic ceilings for OSINT results: every lookup is wrapped
+  in a trust envelope (verified / inferred / heuristic / unverified) whose
+  confidence is enforced against a published band, so a result cannot assert
+  more than its weakest source supports. Zero runtime dependencies.
+type: software
+authors:
+  - name: "WRG-11"
+repository-code: "https://github.com/WRG-11/osint-trust-envelope"
+license: MIT
+version: 0.2.0
+date-released: "2026-09-05"
+keywords:
+  - osint
+  - threat-intelligence
+  - trust
+  - epistemics
+  - zero-dependency
