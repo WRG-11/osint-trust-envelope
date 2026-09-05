@@ -7,7 +7,13 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > **Versioning note:** the `[0.1.0]` entry below is seeded from the repository
 > history rather than from a tagged release.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-05
+
+> **First tagged release.** `[0.1.0]` and `[0.1.1]` below were written
+> from repository history; neither was ever cut as a Git tag, so until now
+> nothing in this repository could be pinned or installed by version, and a
+> shipment check had no anchor to measure against. The content below has
+> been on `main` since 2026-09-03.
 
 ### Added
 
