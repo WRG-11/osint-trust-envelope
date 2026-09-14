@@ -9,6 +9,13 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- CI: lint step (`ruff check .`), `ruff` added to the `dev` extra. Nothing
+  in CI previously checked code style/common mistakes beyond `mypy
+  --strict`'s type-only view. Currently clean (0 findings) -- this is a
+  gate against future drift, not a response to an existing problem.
+
 ### Fixed
 
 - `wrap_breach`: the `[0.2.0]` fix below handled `password_check` ok +

@@ -38,7 +38,7 @@ dependencies = []
 
 [project.optional-dependencies]
 # Test-only tooling. The library itself never imports these.
-dev = ["pytest>=7", "coverage>=7", "mypy>=1.8"]
+dev = ["pytest>=7", "coverage>=7", "mypy>=1.8", "ruff>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/WRG-11/osint-trust-envelope"
