@@ -1549,6 +1549,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     # through to the same pw_ok branch below; the underlying error (if any)
     # is still surfaced rather than silently dropped.
     em_attempted_but_inconclusive = bool(em_check) and not em_ok and not em_skipped
+    # Mirror of the above for the password side. There is no "skipped" state
+    # for the password check -- the k-anonymity range query needs no paid
+    # key, so if it was requested at all it was attempted.
+    pw_attempted_but_inconclusive = bool(pw_check) and not pw_ok
 
     if pw_ok and em_ok:
         verdict, conf = VERIFIED, 0.97
@@ -1559,8 +1563,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
         verdict, conf = VERIFIED, 0.90
         if em_attempted_but_inconclusive and em_check.get("error"):
             errors.append(f"email_check_error: {em_check.get('error')}")
-    elif em_ok and not pw_check:
+    elif em_ok and (not pw_check or pw_attempted_but_inconclusive):
         verdict, conf = VERIFIED, 0.93
+        if pw_attempted_but_inconclusive and pw_check.get("error"):
+            errors.append(f"password_check_error: {pw_check.get('error')}")
     elif em_skipped and not pw_check:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("no_hibp_key_password_check_not_requested")
@@ -1579,6 +1585,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
             "The HIBP k-anonymity password check completed - a cryptographic "
             "range query, not a heuristic, which is why this wrapper may reach "
             "verified at all.")
+    elif pw_attempted_but_inconclusive:
+        reasoning.append(
+            "The password check was attempted and did not conclude; it is "
+            "treated as no password data rather than as a negative.")
     else:
         reasoning.append("No password check completed.")
     if em_ok:

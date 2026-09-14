@@ -1183,6 +1183,37 @@ class TestBreachWrapper:
         assert no_email["trust"]["confidence"] == errored_email["trust"]["confidence"]
         assert no_email["trust"]["verdict"] == errored_email["trust"]["verdict"] == t.VERIFIED
 
+    def test_email_ok_password_errored_stays_verified_and_surfaces_error(self):
+        """Mirror of test_password_ok_email_errored_stays_verified_and_surfaces_error.
+
+        The CHANGELOG's [0.2.0] fix handled password-ok + email-errored, but
+        the symmetric case -- password_check ATTEMPTED but errored (not
+        skipped: there is no "skipped" state for the free k-anonymity
+        check), email_check fully ok -- still fell through to the generic
+        `INFERRED 0.55` branch, silently downgrading a genuinely verified
+        email check AND dropping the password error entirely."""
+        env = t.wrap_breach({
+            "password_check": {"checked": False, "error": "network_timeout"},
+            "email_check": {"checked": True},
+        })
+        assert env["trust"]["verdict"] == t.VERIFIED
+        assert env["trust"]["confidence"] == 0.93
+        assert "password_check_error: network_timeout" in env["trust"]["errors"]
+
+    def test_email_ok_password_errored_matches_no_password_check_confidence(self):
+        """The errored-password and no-password-at-all states must land on
+        the same confidence, mirroring the email-side regression test."""
+        no_password = t.wrap_breach({
+            "password_check": None,
+            "email_check": {"checked": True},
+        })
+        errored_password = t.wrap_breach({
+            "password_check": {"checked": False, "error": "rate_limited"},
+            "email_check": {"checked": True},
+        })
+        assert no_password["trust"]["confidence"] == errored_password["trust"]["confidence"]
+        assert no_password["trust"]["verdict"] == errored_password["trust"]["verdict"] == t.VERIFIED
+
 
 class TestPipelineWrapper:
     def test_pipeline_verdict_equals_weakest_submodule(self):

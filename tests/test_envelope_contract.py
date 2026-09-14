@@ -118,6 +118,17 @@ def test_a_bool_confidence_is_not_mistaken_for_a_number() -> None:
     assert any("expected a number" in p for p in validate_envelope(env))
 
 
+@pytest.mark.parametrize("bad_conf", [1.5, -0.3])
+def test_a_confidence_outside_0_1_is_reported(bad_conf: float) -> None:
+    """The 0.0-1.0 range check itself had no direct test -- only the bool
+    trap above did, which exercises a different code path (the isinstance
+    guard, not the range comparison)."""
+    env = {"result": {}, "trust": {
+        "verdict": t.VERIFIED, "confidence": bad_conf, "method": "m",
+        "source": "s", "warnings": [], "errors": [], "reasoning": []}}
+    assert any("outside 0.0-1.0" in p for p in validate_envelope(env))
+
+
 def test_it_does_not_judge_whether_the_verdict_is_the_right_one() -> None:
     """A well-formed envelope claiming `verified 0.95` for a coin flip passes.
 

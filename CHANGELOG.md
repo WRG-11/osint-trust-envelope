@@ -11,6 +11,26 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `wrap_breach`: the `[0.2.0]` fix below handled `password_check` ok +
+  `email_check` attempted-but-errored (surfacing the error, staying
+  `VERIFIED`). The mirror case -- `password_check` attempted but errored
+  (there is no "skipped" state for the free k-anonymity check; if it was
+  requested, it was attempted) + `email_check` fully ok -- still fell
+  through to the generic `INFERRED 0.55` branch, silently downgrading a
+  genuinely verified email check AND dropping the password error entirely.
+  Reproduced: `wrap_breach({"password_check": {"checked": False, "error":
+  "network_timeout"}, "email_check": {"checked": True}})` returned
+  `inferred 0.55` with `errors == []` and a reasoning bullet claiming
+  "No password check completed" -- factually wrong; a check WAS attempted,
+  it errored. Added the symmetric `pw_attempted_but_inconclusive` branch
+  (mirroring `em_attempted_but_inconclusive`): now returns `VERIFIED 0.93`
+  with `"password_check_error: network_timeout"` surfaced in `errors`, and
+  the reasoning bullet correctly distinguishes "attempted and inconclusive"
+  from "not requested at all". Found by chasing a coverage gap left over
+  from the `[0.2.0]` fix -- the async-error branch this fix closes was
+  untested, and the CHANGELOG entry for the direction that WAS fixed did
+  not mention checking its mirror.
+
 - `wrap_username_scan`: when `strict=True` and a historical-confidence
   provider is wired, the "majority of sites errored" check compared the
   error count (computed *before* strict-mode filtering) against the site
