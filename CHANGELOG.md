@@ -9,6 +9,24 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `wrap_phone`'s invalid-format early return never referenced its own
+  `context` parameter at all -- unlike `wrap_email`'s equivalent early
+  return, which calls `_apply_context_cap` purely for the warning tag
+  (the confidence, 0.05, is already below every context's cap, so nothing
+  clamps). Both wrappers gained `context` support in the same CHANGELOG
+  entry ("Deployment-context confidence cap extended to wrap_email,
+  wrap_phone, wrap_ip, wrap_domain"), but only email's early return got
+  the treatment. A caller in a `gov`/`strict` deployment scanning an
+  invalid phone number got an envelope indistinguishable from one with no
+  context specified at all -- no `context:gov` warning, nothing to show
+  which policy was supposedly in effect. `wrap_ip` and `wrap_domain` have
+  no true early return (their all-zero-sources case still flows to the
+  shared `_apply_context_cap` call at the end of the function), so this
+  was specific to the two wrappers with a `return` inside their bad-input
+  branch.
+
 ### Added
 
 - CI: lint step (`ruff check .`), `ruff` added to the `dev` extra. Nothing

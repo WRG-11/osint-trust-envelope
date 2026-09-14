@@ -1040,6 +1040,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         verdict, conf = UNVERIFIED, 0.05
         errors.append("invalid_phone_format")
         warnings.append("number_did_not_parse")
+        _apply_context_cap(conf, context, warnings)
         return envelope(
             raw,
             build_trust(

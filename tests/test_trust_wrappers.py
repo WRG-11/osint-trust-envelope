@@ -1386,3 +1386,18 @@ class TestContextCapExtendedToOtherWrappers:
         env = t.wrap_email({"validation": {"format_valid": False}}, context="gov")
         assert env["trust"]["verdict"] == t.UNVERIFIED
         assert env["trust"]["confidence"] == 0.05
+        assert "context:gov" in env["trust"]["warnings"]
+
+    def test_invalid_format_phone_still_tags_context(self):
+        """Mirror of the email test above: wrap_phone's own early-return
+        bad-format path was extended with `context` support in the same
+        CHANGELOG entry as wrap_email ("Deployment-context confidence cap
+        extended to wrap_email, wrap_phone, wrap_ip, wrap_domain"), but only
+        wrap_email's early return actually calls the context helper -- the
+        phone path never referenced `context` at all, so a caller in a
+        `gov`/`strict` deployment got an envelope indistinguishable from one
+        with no context specified."""
+        env = t.wrap_phone({"parsed": {"valid": False}}, context="gov")
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+        assert env["trust"]["confidence"] == 0.05
+        assert "context:gov" in env["trust"]["warnings"]
