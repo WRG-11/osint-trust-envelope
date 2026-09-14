@@ -27,6 +27,22 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   everything else (the confidence-ratio math and the reported `extra`
   fields), matching this file's existing "Recompute counts AFTER strict
   filter so the UI sees consistent numbers" design.
+- `__init__.py`'s `__version__` was `"0.1.1"`, one release behind
+  `pyproject.toml`/`CITATION.cff`'s `0.2.0` (tagged 2026-09-05) -- the exact
+  bug class the `[0.1.1]` entry below already fixed once (`0.1.0` ->
+  `0.1.1`), recurred unguarded for the next release. Synced to `0.2.0`.
+  Added `tests/test_version.py`, which reads `pyproject.toml` and
+  `CITATION.cff` with a regex (no `tomllib`, since this package supports
+  Python 3.10) and asserts both match `__version__` -- so this cannot
+  silently drift a third time.
+- `SECURITY.md`'s "Supported Versions" table said "Latest release on PyPI"
+  as if the package were already published there, contradicting the
+  README's own Status section ("not yet published to PyPI"). Reworded to
+  "Latest tagged GitHub release" with a note pointing at the README.
+- `.coveragerc`'s `fail_under` floor was still 80, its original
+  conservative-first-pass value; actual measured coverage is 94% (was 88%
+  at the `0.2.0` release per that entry below, drifted further since
+  without the floor being ratcheted). Raised to 90.
 
 ## [0.2.0] - 2026-09-05
 
