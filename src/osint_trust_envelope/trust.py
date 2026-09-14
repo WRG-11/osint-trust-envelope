@@ -121,6 +121,23 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_dict(value: Any) -> dict[str, Any]:
+    """Coerce a caller-supplied nested sub-field to a dict, never raising.
+
+    The dominant pattern in this module is ``raw.get("key", {}) or {}`` --
+    it guards against the field being ABSENT or falsy, but not against it
+    being PRESENT with the wrong type. A malformed adapter payload with
+    e.g. ``{"validation": "error: timeout"}`` (a string where a dict
+    belongs) sails past ``or {}`` unchanged (a non-empty string is truthy),
+    and the very next ``.get()`` call on it crashes with ``AttributeError``.
+
+    Six wrappers (company, ip, phone, email, domain, breach) had this exact
+    gap on their primary sub-fields -- found 2026-09-15 by systematically
+    passing a non-dict value for each wrapper's top-level nested field.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _enforce_band(
     verdict: str,
     confidence: float,
@@ -864,14 +881,14 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     """
     if not isinstance(raw, dict):
         raw = {}
-    validation = raw.get("validation", {}) or {}
+    validation = _safe_dict(raw.get("validation"))
     format_valid = bool(validation.get("format_valid"))
     mx_reachable = bool(validation.get("mx_reachable"))
     mx_records = validation.get("mx_records") or []
     mx_provider = validation.get("mx_provider")
-    spf = validation.get("spf") or {}
-    dmarc = validation.get("dmarc") or {}
-    role_account = validation.get("role_account") or {}
+    spf = _safe_dict(validation.get("spf"))
+    dmarc = _safe_dict(validation.get("dmarc"))
+    role_account = _safe_dict(validation.get("role_account"))
     disposable = bool(validation.get("disposable"))
     is_role = bool(role_account.get("is_role"))
     services_found = _safe_int(raw.get("services_found", 0) or 0)
@@ -1046,7 +1063,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     """
     if not isinstance(raw, dict):
         raw = {}
-    parsed = raw.get("parsed", {}) or {}
+    parsed = _safe_dict(raw.get("parsed"))
     valid_format = bool(parsed.get("valid"))
     enrichment_source = parsed.get("enrichment_source") or "regex"
     used_libphonenumber = enrichment_source == "libphonenumber"
@@ -1119,7 +1136,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     # has a *current* carrier rather than the prefix's original allocation.
     # We still cap below the verified threshold because Numverify themselves
     # disclaim that it can be stale.
-    reverse = raw.get("reverse_lookup", {}) or {}
+    reverse = _safe_dict(raw.get("reverse_lookup"))
     if reverse.get("lookup_done"):
         verdict = INFERRED
         # Top of the inferred band (was a hardcoded 0.82, i.e. two points over
@@ -1214,12 +1231,12 @@ def wrap_ip(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any
     """
     if not isinstance(raw, dict):
         raw = {}
-    geo = raw.get("geolocation", {}) or {}
-    rdap = raw.get("rdap", {}) or {}
-    rdns = raw.get("reverse_dns", {}) or {}
-    tor = raw.get("tor", {}) or {}
-    dnsbl = raw.get("dnsbl", {}) or {}
-    asn = raw.get("asn_classification", {}) or {}
+    geo = _safe_dict(raw.get("geolocation"))
+    rdap = _safe_dict(raw.get("rdap"))
+    rdns = _safe_dict(raw.get("reverse_dns"))
+    tor = _safe_dict(raw.get("tor"))
+    dnsbl = _safe_dict(raw.get("dnsbl"))
+    asn = _safe_dict(raw.get("asn_classification"))
 
     geo_found = bool(geo.get("found"))
     rdap_found = bool(rdap.get("found"))
@@ -1361,16 +1378,16 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
     """
     if not isinstance(raw, dict):
         raw = {}
-    rdap = raw.get("rdap", {}) or {}
-    ssl = raw.get("ssl", {}) or {}
-    http = raw.get("http", {}) or {}
-    dns = raw.get("dns", {}) or {}
-    ct = raw.get("ct_logs", {}) or {}
-    ct_alive = raw.get("ct_alive", {}) or {}
-    dnssec = raw.get("dnssec", {}) or {}
-    auth = raw.get("email_auth", {}) or {}
-    spf = (auth.get("spf") or {}) if isinstance(auth, dict) else {}
-    dmarc = (auth.get("dmarc") or {}) if isinstance(auth, dict) else {}
+    rdap = _safe_dict(raw.get("rdap"))
+    ssl = _safe_dict(raw.get("ssl"))
+    http = _safe_dict(raw.get("http"))
+    dns = _safe_dict(raw.get("dns"))
+    ct = _safe_dict(raw.get("ct_logs"))
+    ct_alive = _safe_dict(raw.get("ct_alive"))
+    dnssec = _safe_dict(raw.get("dnssec"))
+    auth = _safe_dict(raw.get("email_auth"))
+    spf = _safe_dict(auth.get("spf"))
+    dmarc = _safe_dict(auth.get("dmarc"))
 
     rdap_found = bool(rdap.get("found"))
     has_ssl = bool(ssl.get("has_ssl"))
@@ -1547,8 +1564,8 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(raw, dict):
         raw = {}
-    pw_check = raw.get("password_check") or {}
-    em_check = raw.get("email_check") or {}
+    pw_check = _safe_dict(raw.get("password_check"))
+    em_check = _safe_dict(raw.get("email_check"))
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -1691,7 +1708,7 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
     """Company OSINT: GitHub org is real API, social checks are 404-based."""
     if not isinstance(raw, dict):
         raw = {}
-    github = raw.get("github", {}) or raw.get("github_org", {}) or {}
+    github = _safe_dict(raw.get("github")) or _safe_dict(raw.get("github_org"))
     gh_found = bool(github.get("found") or github.get("login"))
 
     warnings: list[str] = []

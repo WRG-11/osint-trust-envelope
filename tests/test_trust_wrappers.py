@@ -416,6 +416,19 @@ class TestPhoneWrapper:
         warns = env["trust"]["warnings"]
         assert "install_phonenumbers_for_better_data" in warns
 
+    def test_non_dict_parsed_field_does_not_crash(self):
+        """`parsed = raw.get("parsed", {}) or {}` guarded against the field
+        being absent, not against it being a non-dict truthy value."""
+        env = t.wrap_phone({"parsed": "error: could not parse"})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
+    def test_non_dict_reverse_lookup_field_does_not_crash(self):
+        env = t.wrap_phone({
+            "parsed": {"valid": True, "enrichment_source": "libphonenumber"},
+            "reverse_lookup": "error: timeout",
+        })
+        assert env["trust"]["verdict"] in (t.HEURISTIC, t.INFERRED)
+
 
 class TestEmailWrapper:
     """Email tier-2 ladder pin: heuristic 0.30 → 0.40 → 0.50 → inferred 0.60 → 0.70 → 0.78 → 0.84.
@@ -604,6 +617,22 @@ class TestEmailWrapper:
         assert extra["dmarc_present"] is True
         assert extra["dmarc_policy"] == "quarantine"
 
+    def test_non_dict_validation_field_does_not_crash(self):
+        """`validation = raw.get("validation", {}) or {}` guarded against
+        the field being absent, not against it being a non-dict truthy
+        value (e.g. a string error from a malformed adapter payload)."""
+        env = t.wrap_email({"validation": "error: connection reset"})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
+    def test_non_dict_spf_dmarc_role_account_do_not_crash(self):
+        env = t.wrap_email({
+            "validation": {
+                "format_valid": True, "mx_reachable": True,
+                "spf": "error", "dmarc": ["error"], "role_account": 1,
+            },
+        })
+        assert env["trust"]["verdict"] == t.HEURISTIC
+
     def test_non_numeric_services_found_does_not_crash(self):
         """The whole library's contract is 'never raise, report instead' --
         explicit for validate_envelope, implicit everywhere else via the
@@ -725,6 +754,17 @@ class TestIpWrapper:
         assert "dnsbl_listed:SORBS" in warns
         assert env["trust"]["extra"]["is_dnsbl_listed"] is True
         assert env["trust"]["extra"]["dnsbl_hits"] == ["Spamhaus ZEN", "SORBS"]
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """Every top-level sub-field here (`geolocation`, `rdap`,
+        `reverse_dns`, `tor`, `dnsbl`, `asn_classification`) was guarded
+        with `raw.get("key", {}) or {}`, which protects against the field
+        being absent, not against it being a non-dict truthy value."""
+        env = t.wrap_ip({
+            "geolocation": "error", "rdap": 5, "reverse_dns": ["a"],
+            "tor": "error", "dnsbl": 1, "asn_classification": "error",
+        })
+        assert env["trust"]["verdict"] == t.UNVERIFIED
 
     def test_dnsbl_clean_no_warnings(self):
         env = t.wrap_ip({
@@ -962,6 +1002,18 @@ class TestDomainWrapper:
             "http": {"reachable": True},
         })
         assert "registrar_data_may_be_privacy_redacted" in env["trust"]["warnings"]
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """Every top-level sub-field here (`rdap`, `ssl`, `http`, `dns`,
+        `ct_logs`, `ct_alive`, `dnssec`, `email_auth`) was guarded with
+        `raw.get("key", {}) or {}`, which protects against the field being
+        absent, not against it being a non-dict truthy value."""
+        env = t.wrap_domain({
+            "rdap": "error", "ssl": 5, "http": ["a"], "dns": "error",
+            "ct_logs": 1, "ct_alive": "error", "dnssec": ["a"],
+            "email_auth": 5,
+        })
+        assert env["trust"]["verdict"] == t.UNVERIFIED
 
     def test_confidence_capped_at_096(self):
         # Base verified + DNSSEC + CT should still cap at 0.96
@@ -1270,6 +1322,13 @@ class TestBreachWrapper:
         })
         assert no_password["trust"]["confidence"] == errored_password["trust"]["confidence"]
         assert no_password["trust"]["verdict"] == errored_password["trust"]["verdict"] == t.VERIFIED
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """`pw_check`/`em_check` were guarded with `raw.get("key") or {}`,
+        which protects against the field being absent, not against it
+        being a non-dict truthy value."""
+        env = t.wrap_breach({"password_check": "error", "email_check": ["a"]})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
 
 
 class TestPipelineWrapper:

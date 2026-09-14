@@ -11,6 +11,27 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Systemic crash class, six wrappers**: `wrap_company`, `wrap_ip`,
+  `wrap_phone`, `wrap_email`, `wrap_domain`, and `wrap_breach` all extract
+  their primary nested sub-fields with the pattern `raw.get("key", {}) or
+  {}`. That guards against the field being absent or falsy, but not
+  against it being *present with the wrong type* -- a string, list, or
+  int where a dict belongs (e.g. an adapter that put an error message in
+  `{"validation": "error: timeout"}` instead of the expected shape). The
+  next `.get()` call on that value crashes with `AttributeError`,
+  defeating the entire point of a library whose job is to be the
+  always-answers, never-crashes layer over messy real-world OSINT adapter
+  output. Found by systematically passing a non-dict value for every
+  wrapper's top-level nested field(s) -- 6 of 15 wrappers crashed, 9 did
+  not (they already used `isinstance()` guards for other reasons). Added
+  `_safe_dict(value) -> dict` (returns `{}` for anything that is not
+  already a dict) and used it at all ~20 affected call sites across the
+  six wrappers. Added one crash-safety regression test per wrapper (eight
+  total -- two wrappers have more than one affected field). Mutation-
+  checked as a batch: temporarily made `_safe_dict` an identity function,
+  confirmed all eight new tests fail with the exact `AttributeError`
+  above, restored.
+
 - `wrap_email`'s `services_found` and `wrap_domain`'s `ct_logs.count` were
   the only two fields in the whole module coerced with a bare `int(...)`
   -- every other field is read with `.get(..., default)` plus

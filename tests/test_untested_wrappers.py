@@ -79,6 +79,14 @@ class TestCompanyWrapper:
         env = t.wrap_company({"github": {"found": True}, "domain": "acme.example"})
         assert env["trust"]["verdict"] != t.VERIFIED
 
+    def test_non_dict_github_field_does_not_crash(self):
+        """`github = raw.get("github", {}) or raw.get("github_org", {}) or {}`
+        guarded against the field being absent, not against it being a
+        non-dict truthy value (e.g. a string error message from a
+        malformed adapter payload) -- `.get()` on that crashed."""
+        env = t.wrap_company({"github": "error: rate limited"})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
 
 class TestNameWrapper:
     def test_always_heuristic_regardless_of_input(self):
