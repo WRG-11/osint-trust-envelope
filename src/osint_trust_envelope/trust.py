@@ -580,6 +580,15 @@ def wrap_username_scan(
     # {sites_checked, sites_found, results: [...]}.
     raw_results = [r for r in (raw.get("results") or []) if isinstance(r, dict)]
     err_count = sum(1 for r in raw_results if r.get("status") == "error")
+    # How many sites actually responded at all -- independent of strict
+    # mode's confidence filtering below, which only drops "found" hits for
+    # being low-confidence. A site that answered "found" but got filtered
+    # for low confidence still RESPONDED; it did not error, and using the
+    # post-filter count here would let strict-mode filtering manufacture a
+    # majority-error verdict out of a scan that mostly worked. See
+    # ``checked_after`` for the (deliberately different) post-filter count
+    # used for the confidence-ratio math and the reported extras.
+    responded_count = len(raw_results)
     parking_hits = sum(
         1 for r in raw_results
         if r.get("status") == "not_found" and "parking" in str(r.get("message", "")).lower()
@@ -625,11 +634,11 @@ def wrap_username_scan(
         verdict, conf = UNVERIFIED, 0.05
         warnings.append("no_sites_checked")
         reasoning.append("No sites reached - cannot form any verdict.")
-    elif err_count > checked_after * 0.5:
+    elif err_count > responded_count * 0.5:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("majority_sites_errored")
         reasoning.append(
-            f"{err_count}/{checked_after} sites errored - majority failure invalidates the scan."
+            f"{err_count}/{responded_count} sites errored - majority failure invalidates the scan."
         )
     elif found_after == 0:
         verdict, conf = INFERRED, 0.60

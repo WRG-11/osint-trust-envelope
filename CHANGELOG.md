@@ -7,6 +7,27 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > **Versioning note:** the `[0.1.0]` entry below is seeded from the repository
 > history rather than from a tagged release.
 
+## [Unreleased]
+
+### Fixed
+
+- `wrap_username_scan`: when `strict=True` and a historical-confidence
+  provider is wired, the "majority of sites errored" check compared the
+  error count (computed *before* strict-mode filtering) against the site
+  count *after* strict mode dropped low-confidence "found" hits -- two
+  different denominators for the same ratio. Reproduced live: 19 sites
+  checked, only 5 (26%) actually errored, but with 10 low-confidence
+  "found" hits filtered out, the post-filter count dropped to 9 and
+  `5/9 > 50%` reported `unverified` with "5/9 sites errored - majority
+  failure invalidates the scan" -- even though 14 of 19 sites (74%)
+  responded fine. Confidence-filtering and response-failure are
+  independent axes; one must not manufacture the other. The majority-error
+  check now uses a `responded_count` computed before strict-mode filtering;
+  the post-filter `checked_after`/`found_after` counts are unchanged for
+  everything else (the confidence-ratio math and the reported `extra`
+  fields), matching this file's existing "Recompute counts AFTER strict
+  filter so the UI sees consistent numbers" design.
+
 ## [0.2.0] - 2026-09-05
 
 > **First tagged release.** `[0.1.0]` and `[0.1.1]` below were written

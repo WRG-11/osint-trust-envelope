@@ -228,6 +228,43 @@ class TestUsernameScanConfidenceEnrichment:
         assert env["trust"]["extra"]["strict_mode"] is True
         assert "strict_mode_active" in env["trust"]["warnings"]
 
+    def test_strict_mode_filtering_does_not_manufacture_a_majority_error(self, monkeypatch):
+        """The 'majority sites errored' check must answer against how many
+        sites actually responded, not against however many 'found' hits
+        strict mode happened to filter out for LOW CONFIDENCE.
+
+        19 sites checked: 5 errored (26%), 10 found (all low-confidence,
+        dropped by strict mode), 4 not_found. Before this fix, err_count (5,
+        computed pre-filter) was compared against checked_after (post-filter
+        count, which drops to 9 once the 10 low-confidence hits are removed)
+        -- 5/9 > 50%, so the wrapper reported `unverified`
+        'majority_sites_errored' even though 14 of 19 sites (74%) responded
+        just fine. Confidence-filtering and response-failure are independent
+        axes; one must not manufacture the other.
+        """
+        monkeypatch.setattr(
+            t, "_get_site_confidences",
+            lambda u: {f"Low{i}": 0.05 for i in range(10)},
+        )
+        results = (
+            [{"status": "error"}] * 5
+            + [{"status": "found", "site": f"Low{i}"} for i in range(10)]
+            + [{"status": "not_found"}] * 4
+        )
+        env = t.wrap_username_scan(
+            {"sites_checked": 19, "sites_found": 10, "results": results},
+            username="someone",
+            strict=True,
+        )
+        trust = env["trust"]
+        assert trust["extra"]["filtered_low_confidence"] == 10
+        assert "majority_sites_errored" not in trust["warnings"], (
+            f"5/19 (26%) errored is not a majority, but strict-mode filtering "
+            f"shrank the denominator and manufactured one. verdict={trust['verdict']!r} "
+            f"reasoning={trust['reasoning']!r}"
+        )
+        assert trust["verdict"] != t.UNVERIFIED
+
     def test_strict_mode_without_history_is_noop(self, monkeypatch):
         """If there is no history data, strict mode cannot filter anything
         and must fall through gracefully without erasing hits."""
