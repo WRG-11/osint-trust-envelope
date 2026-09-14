@@ -103,6 +103,24 @@ def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Coerce a caller-supplied count field, never raising.
+
+    Every other field in this module is read with `.get(..., default)` plus
+    `bool()`/`isinstance()` coercion, which cannot raise on a malformed
+    adapter payload -- a scraper that put an error string or `None` where a
+    count belongs degrades to a falsy default instead of crashing the whole
+    wrapper. A bare `int(x)` on the same kind of field is the one place
+    that breaks that pattern: `int("unknown")` raises `ValueError`, and this
+    library's whole premise is that a wrapper never raises on bad input, it
+    reports.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _enforce_band(
     verdict: str,
     confidence: float,
@@ -856,7 +874,7 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     role_account = validation.get("role_account") or {}
     disposable = bool(validation.get("disposable"))
     is_role = bool(role_account.get("is_role"))
-    services_found = int(raw.get("services_found", 0) or 0)
+    services_found = _safe_int(raw.get("services_found", 0) or 0)
 
     spf_present = bool(spf.get("present"))
     spf_all_qualifier = spf.get("all_qualifier")  # '+', '-', '~', '?'
@@ -1361,7 +1379,7 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
 
     dnssec_validated = bool(dnssec.get("validated"))
     dnssec_checked = bool(dnssec.get("checked"))
-    ct_count = int(ct.get("count") or 0)
+    ct_count = _safe_int(ct.get("count") or 0)
     ct_alive_count = len(ct_alive.get("alive") or [])
     spf_present = bool(spf.get("present"))
     dmarc_present = bool(dmarc.get("present"))

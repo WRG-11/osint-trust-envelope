@@ -604,6 +604,21 @@ class TestEmailWrapper:
         assert extra["dmarc_present"] is True
         assert extra["dmarc_policy"] == "quarantine"
 
+    def test_non_numeric_services_found_does_not_crash(self):
+        """The whole library's contract is 'never raise, report instead' --
+        explicit for validate_envelope, implicit everywhere else via the
+        pervasive .get(..., default) + bool()/isinstance() coercion used on
+        every other field. services_found was the one field coerced with a
+        bare int(), which raises ValueError on a malformed adapter payload
+        (e.g. a scraper that put an error string where a count belongs)
+        instead of degrading gracefully like every other field in this
+        wrapper."""
+        env = t.wrap_email({
+            "validation": {"format_valid": True, "mx_reachable": True},
+            "services_found": "unknown",
+        })
+        assert env["trust"]["extra"]["services_found"] == 0
+
 
 class TestIpWrapper:
     def test_all_sources_found_is_verified_high_confidence(self):
@@ -816,6 +831,20 @@ class TestDomainWrapper:
         assert env["trust"]["verdict"] == t.INFERRED
         assert 0.50 <= env["trust"]["confidence"] <= 0.80
         assert "only_one_source_responded" in env["trust"]["warnings"]
+
+    def test_non_numeric_ct_count_does_not_crash(self):
+        """Mirror of TestEmailWrapper's services_found test: ct_logs.count
+        was the one field in this wrapper coerced with a bare int(), which
+        raises ValueError on a malformed value instead of degrading
+        gracefully like every other field here."""
+        env = t.wrap_domain({
+            "dns": {"a_records": ["1.2.3.4"]},
+            "rdap": {"found": True},
+            "ssl": {"has_ssl": True},
+            "http": {"reachable": True},
+            "ct_logs": {"checked": True, "count": "unknown"},
+        })
+        assert env["trust"]["extra"]["ct_log_count"] == 0
 
     # ── Tier-2 ──────────────────────────────────────────────────────────
 

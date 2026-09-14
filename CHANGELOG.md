@@ -11,6 +11,18 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `wrap_email`'s `services_found` and `wrap_domain`'s `ct_logs.count` were
+  the only two fields in the whole module coerced with a bare `int(...)`
+  -- every other field is read with `.get(..., default)` plus
+  `bool()`/`isinstance()` coercion, which cannot raise on a malformed
+  adapter payload. A caller passing a non-numeric value in either field
+  (e.g. a scraper that put an error string where a count belongs) crashed
+  the wrapper with an uncaught `ValueError`, contradicting this library's
+  own explicit "never raise, report instead" contract (stated for
+  `validate_envelope`, implicit everywhere else via the pervasive
+  defensive-coercion pattern). Added `_safe_int()` (falls back to a
+  default on `TypeError`/`ValueError`) and used it in both places.
+
 - `wrap_phone`'s invalid-format early return never referenced its own
   `context` parameter at all -- unlike `wrap_email`'s equivalent early
   return, which calls `_apply_context_cap` purely for the warning tag
