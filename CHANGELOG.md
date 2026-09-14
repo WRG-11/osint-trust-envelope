@@ -22,6 +22,11 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `validate_envelope`, implicit everywhere else via the pervasive
   defensive-coercion pattern). Added `_safe_int()` (falls back to a
   default on `TypeError`/`ValueError`) and used it in both places.
+- Same crash class, same two wrappers: `dmarc_policy = (dmarc.get("policy")
+  or "").lower()` crashes with `AttributeError` if `policy` is a non-string
+  truthy value (int, list, dict) -- `.lower()` does not exist on those
+  types. Guarded with `str(...)` first in both `wrap_email` and
+  `wrap_domain`.
 
 - `wrap_phone`'s invalid-format early return never referenced its own
   `context` parameter at all -- unlike `wrap_email`'s equivalent early

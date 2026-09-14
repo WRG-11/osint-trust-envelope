@@ -619,6 +619,19 @@ class TestEmailWrapper:
         })
         assert env["trust"]["extra"]["services_found"] == 0
 
+    def test_non_string_dmarc_policy_does_not_crash(self):
+        """dmarc_policy is built with `(dmarc.get("policy") or "").lower()`
+        -- a non-string truthy value (int, list, dict from a malformed
+        adapter payload) has no .lower() and crashes with AttributeError,
+        the same class of bug as the bare int() above."""
+        env = t.wrap_email({
+            "validation": {
+                "format_valid": True, "mx_reachable": True,
+                "dmarc": {"present": True, "policy": 12345},
+            },
+        })
+        assert env["trust"]["extra"]["dmarc_policy"] == "12345"
+
 
 class TestIpWrapper:
     def test_all_sources_found_is_verified_high_confidence(self):
@@ -845,6 +858,21 @@ class TestDomainWrapper:
             "ct_logs": {"checked": True, "count": "unknown"},
         })
         assert env["trust"]["extra"]["ct_log_count"] == 0
+
+    def test_non_string_dmarc_policy_does_not_crash(self):
+        """Mirror of TestEmailWrapper's equivalent test: wrap_domain builds
+        its internal `dmarc_policy` the same unguarded way (extra.dmarc_policy
+        itself echoes the raw value unchanged, so this pins the internal
+        comparison logic -- e.g. dmarc_policy_none_no_enforcement -- instead
+        of crashing)."""
+        env = t.wrap_domain({
+            "dns": {"a_records": ["1.2.3.4"]},
+            "rdap": {"found": True},
+            "ssl": {"has_ssl": True},
+            "http": {"reachable": True},
+            "email_auth": {"dmarc": {"present": True, "policy": ["reject"]}},
+        })
+        assert env["trust"]["extra"]["dmarc_policy"] == ["reject"]
 
     # ── Tier-2 ──────────────────────────────────────────────────────────
 

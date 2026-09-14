@@ -879,7 +879,7 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     spf_present = bool(spf.get("present"))
     spf_all_qualifier = spf.get("all_qualifier")  # '+', '-', '~', '?'
     dmarc_present = bool(dmarc.get("present"))
-    dmarc_policy = (dmarc.get("policy") or "").lower()
+    dmarc_policy = str(dmarc.get("policy") or "").lower()
     dmarc_strict = dmarc_policy in ("quarantine", "reject")
 
     warnings: list[str] = []
@@ -1383,7 +1383,7 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
     ct_alive_count = len(ct_alive.get("alive") or [])
     spf_present = bool(spf.get("present"))
     dmarc_present = bool(dmarc.get("present"))
-    dmarc_policy = (dmarc.get("policy") or "").lower()
+    dmarc_policy = str(dmarc.get("policy") or "").lower()
 
     # Tier-2 SSL deep inspection signals
     ssl_protocol_class = ssl.get("protocol_class")
