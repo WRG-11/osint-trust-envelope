@@ -922,8 +922,8 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 warnings=mandatory_warnings,
                 errors=errors,
                 reasoning=[
-                    "Address failed the RFC-5322 format check - no lookup was "
-                    "attempted, so this is 'no data', not 'no mailbox'.",
+                    ("Address failed the RFC-5322 format check - no lookup was "
+                    "attempted, so this is 'no data', not 'no mailbox'."),
                 ],
                 extra={
                     "format_valid": False,
@@ -1086,8 +1086,8 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 warnings=warnings,
                 errors=errors,
                 reasoning=[
-                    "The number did not parse - no enrichment was attempted, so "
-                    "this is 'unparseable input', not 'unused number'.",
+                    ("The number did not parse - no enrichment was attempted, so "
+                    "this is 'unparseable input', not 'unused number'."),
                 ],
                 extra={
                     "valid_format": False,
@@ -1696,8 +1696,8 @@ def wrap_avatar(raw: dict[str, Any]) -> dict[str, Any]:
                 "A profile image was served for at least one identifier."
                 if found_any else
                 "No identifier returned a profile image.",
-                "An image existing at an address says nothing about who owns "
-                "it - correlation here is probabilistic, so the ceiling is inferred.",
+                ("An image existing at an address says nothing about who owns "
+                "it - correlation here is probabilistic, so the ceiling is inferred."),
             ],
             extra={"any_found": found_any},
         ),
@@ -1719,16 +1719,16 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
         warnings.append("github_verified_social_heuristic")
         reasoning = [
             "The GitHub org resolved through the real API - an authoritative hit.",
-            "The social-presence half is still 404-scraped, so the weaker half "
-            "sets the ceiling for the pair.",
+            ("The social-presence half is still 404-scraped, so the weaker half "
+            "sets the ceiling for the pair."),
         ]
     elif raw.get("domain"):
         verdict, conf = HEURISTIC, 0.40
         warnings.append("no_github_org_social_presence_inferred_from_404")
         reasoning = [
             "No GitHub org; only a domain was supplied.",
-            "Everything left rests on 404-based social scraping, where false "
-            "positives are expected.",
+            ("Everything left rests on 404-based social scraping, where false "
+            "positives are expected."),
         ]
     else:
         verdict, conf = UNVERIFIED, 0.15
@@ -1766,10 +1766,10 @@ def wrap_name(raw: dict[str, Any]) -> dict[str, Any]:
                 "feed_to_username_scan_for_verification",
             ],
             reasoning=[
-                "Nothing was looked up: this wrapper only expands a name into "
-                "candidate handles from local pattern tables.",
-                "The candidates are input for a scan, not findings - treating "
-                "them as results would be inventing evidence.",
+                ("Nothing was looked up: this wrapper only expands a name into "
+                "candidate handles from local pattern tables."),
+                ("The candidates are input for a scan, not findings - treating "
+                "them as results would be inventing evidence."),
             ],
         ),
     )
@@ -1789,10 +1789,10 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
                 method="rdap_http_api",
                 source="rdap.org",
                 reasoning=[
-                    "RDAP answered over its real HTTP API - registry data, not "
-                    "an inference.",
-                    "Registrant contact fields are frequently privacy-redacted, "
-                    "so 'authoritative' covers the registration, not the person.",
+                    ("RDAP answered over its real HTTP API - registry data, not "
+                    "an inference."),
+                    ("Registrant contact fields are frequently privacy-redacted, "
+                    "so 'authoritative' covers the registration, not the person."),
                 ],
             ),
         )
@@ -1805,8 +1805,8 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
             source="rdap.org",
             warnings=["rdap_lookup_failed"],
             reasoning=[
-                "RDAP returned nothing usable - the honest state is 'no data', "
-                "which is not evidence the domain is unregistered.",
+                ("RDAP returned nothing usable - the honest state is 'no data', "
+                "which is not evidence the domain is unregistered."),
             ],
         ),
     )
@@ -1826,11 +1826,11 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
                 method="ssl_socket_handshake",
                 source="direct TLS handshake",
                 reasoning=[
-                    "A TLS handshake completed and the peer presented a "
+                    ("A TLS handshake completed and the peer presented a "
                     "certificate - directly observed, not reported by a third "
-                    "party.",
-                    "The certificate is authoritative for what it attests; it "
-                    "says nothing about who operates the host.",
+                    "party."),
+                    ("The certificate is authoritative for what it attests; it "
+                    "says nothing about who operates the host."),
                 ],
             ),
         )
@@ -1843,8 +1843,8 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
             source="direct TLS handshake",
             warnings=["ssl_handshake_failed_or_no_cert"],
             reasoning=[
-                "No handshake and no certificate - the host may be reachable "
-                "without TLS, or not reachable at all; this cannot tell them apart.",
+                ("No handshake and no certificate - the host may be reachable "
+                "without TLS, or not reachable at all; this cannot tell them apart."),
             ],
         ),
     )
@@ -1871,8 +1871,8 @@ def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
         if count else
         "No source returned a hit - absence here is weak, since these indexes "
         "are partial by nature.",
-        "A string appearing in a paste is not attribution; every hit needs a "
-        "human relevance call, which is why the ceiling is inferred.",
+        ("A string appearing in a paste is not attribution; every hit needs a "
+        "human relevance call, which is why the ceiling is inferred."),
     ]
 
     return envelope(
@@ -1904,11 +1904,11 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
                 source="local filesystem",
                 warnings=["exif_can_be_spoofed_or_stripped"],
                 reasoning=[
-                    "Parsed from the file on disk - deterministic, repeatable, "
+                    ("Parsed from the file on disk - deterministic, repeatable, "
                     "and dependent on no third party, which is why a local read "
-                    "outranks every networked wrapper here.",
-                    "Authoritative for what the file CLAIMS: EXIF can be edited "
-                    "or stripped before the file ever reached you.",
+                    "outranks every networked wrapper here."),
+                    ("Authoritative for what the file CLAIMS: EXIF can be edited "
+                    "or stripped before the file ever reached you."),
                 ],
             ),
         )
@@ -1921,8 +1921,8 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
             source="local filesystem",
             errors=[raw.get("error", "no_metadata_extracted")] if raw.get("error") else [],
             reasoning=[
-                "Nothing was extracted - either the format carries no metadata "
-                "or it was stripped; this cannot distinguish the two.",
+                ("Nothing was extracted - either the format carries no metadata "
+                "or it was stripped; this cannot distinguish the two."),
             ],
         ),
     )
@@ -1945,9 +1945,9 @@ def wrap_generic(
             source=source,
             warnings=warnings or [],
             reasoning=[
-                f"No dedicated wrapper covers this source, so the verdict is "
+                (f"No dedicated wrapper covers this source, so the verdict is "
                 f"whatever the caller asserted ({verdict}) rather than anything "
-                f"this package derived.",
+                f"this package derived."),
             ],
         ),
     )
@@ -2027,16 +2027,16 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
 
     if weakest_module is None:
         reasoning = [
-            "No sub-module produced a result, so the pipeline has nothing to "
-            "aggregate - 'unverified' here means empty, not negative.",
+            ("No sub-module produced a result, so the pipeline has nothing to "
+            "aggregate - 'unverified' here means empty, not negative."),
         ]
     else:
         reasoning = [
             f"{len(sub_results)} sub-module(s) ran: "
             + ", ".join(f"{n}={v} {c}" for n, v, c in sub_results) + ".",
-            f"'{weakest_module}' is the weak link at {overall} {conf} and sets "
+            (f"'{weakest_module}' is the weak link at {overall} {conf} and sets "
             f"the aggregate - a chain is worth its weakest evidence, so "
-            f"strengthening any other module will not move this number.",
+            f"strengthening any other module will not move this number."),
         ]
         if unmapped:
             reasoning.append(

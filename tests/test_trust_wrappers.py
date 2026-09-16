@@ -7,6 +7,8 @@ application that exposes these wrappers, not in this library.
 """
 from __future__ import annotations
 
+from typing import ClassVar
+
 from osint_trust_envelope import trust as t
 
 
@@ -1424,7 +1426,7 @@ class TestContextCapExtendedToOtherWrappers:
     _apply_context_cap() helper. Default (context=None) behavior must be
     byte-for-byte unchanged; these pin the new opt-in behavior."""
 
-    EMAIL_STRONG = {
+    EMAIL_STRONG: ClassVar = {
         "validation": {
             "format_valid": True, "mx_reachable": True,
             "mx_provider": "Google Workspace",
@@ -1432,15 +1434,15 @@ class TestContextCapExtendedToOtherWrappers:
         },
         "services_found": 2,
     }
-    IP_ALL_THREE = {
+    IP_ALL_THREE: ClassVar = {
         "geolocation": {"found": True}, "rdap": {"found": True},
         "reverse_dns": {"hostname": "a.b"},
     }
-    DOMAIN_ALL_FOUR = {
+    DOMAIN_ALL_FOUR: ClassVar = {
         "dns": {"a_records": ["1.2.3.4"]}, "rdap": {"found": True},
         "ssl": {"has_ssl": True}, "http": {"reachable": True},
     }
-    PHONE_STRONG = {
+    PHONE_STRONG: ClassVar = {
         "parsed": {"valid": True, "country_code": "+1", "enrichment_source": "libphonenumber"},
         "social_checks": [
             {"platform": "WhatsApp", "possible": True},

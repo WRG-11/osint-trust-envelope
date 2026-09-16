@@ -153,7 +153,7 @@ def _assert_in_band(name: str, raw, block: dict) -> None:
     verdict, conf = block["verdict"], block["confidence"]
     low, high = t.VERDICT_BANDS[verdict]
     assert low <= conf <= high, (
-        f"{name}{'' if not isinstance(raw, dict) else ''} returned "
+        f"{name} returned "
         f"{verdict!r} with confidence {conf}, outside its band {low}-{high}. "
         f"raw={raw!r}"
     )

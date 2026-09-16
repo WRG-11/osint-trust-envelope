@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import pytest
 
-from osint_trust_envelope import trust as t
-from osint_trust_envelope import validate_envelope
-
 # The band grid is the canonical corpus of representative inputs. Importing it
 # rather than restating it keeps the two files from drifting apart -- a second
 # copy of a fixture set rots the same way a second copy of a guard does.
 from test_band_invariant import GRID, _public_wrappers
 
+from osint_trust_envelope import trust as t
+from osint_trust_envelope import validate_envelope
 
 # ── validate_envelope: real output is clean ─────────────────────────────────
 
