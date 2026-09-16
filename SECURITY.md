@@ -4,8 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| Latest release on PyPI | Yes |
+| Latest tagged GitHub release | Yes |
 | Older releases | No |
+
+> Not yet published to PyPI (see README's Status section) -- "latest release"
+> currently means the latest GitHub tag.
 
 ## Reporting a Vulnerability
 

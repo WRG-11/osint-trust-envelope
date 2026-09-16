@@ -5,9 +5,10 @@
 # (measuring "src/osint_trust_envelope" mis-reports the package as never
 # imported -> 0%).
 #
-# fail_under is intentionally conservative for a first pass; this is a small,
-# zero-dependency, fully-typed library with an existing test suite, so the
-# real number should land well above this. Ratchet it up once measured.
+# fail_under started conservative (80) for a first pass. Measured 2026-09-15:
+# actual coverage is 94% (was 88% at the 0.2.0 release per CHANGELOG, drifted
+# further since without the floor being ratcheted) -- ratcheted to 90, a
+# margin below the measured number rather than pinned to it exactly.
 
 [run]
 source = src
@@ -16,7 +17,7 @@ branch = True
 [report]
 show_missing = True
 skip_covered = False
-fail_under = 80
+fail_under = 90
 exclude_lines =
     pragma: no cover
     if __name__ == .__main__.:

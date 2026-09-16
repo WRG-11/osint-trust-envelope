@@ -18,7 +18,7 @@ import sys
 # put the local src/ layout on sys.path before importing.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
-from osint_trust_envelope import (  # noqa: E402
+from osint_trust_envelope import (
     wrap_breach,
     wrap_domain,
     wrap_email,

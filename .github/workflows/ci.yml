@@ -40,3 +40,6 @@ jobs:
 
       - name: Type check (py.typed is a promise to downstream type-checkers)
         run: mypy --strict src/osint_trust_envelope/
+
+      - name: Lint
+        run: ruff check .

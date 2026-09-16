@@ -7,6 +7,8 @@ application that exposes these wrappers, not in this library.
 """
 from __future__ import annotations
 
+from typing import ClassVar
+
 from osint_trust_envelope import trust as t
 
 
@@ -228,6 +230,43 @@ class TestUsernameScanConfidenceEnrichment:
         assert env["trust"]["extra"]["strict_mode"] is True
         assert "strict_mode_active" in env["trust"]["warnings"]
 
+    def test_strict_mode_filtering_does_not_manufacture_a_majority_error(self, monkeypatch):
+        """The 'majority sites errored' check must answer against how many
+        sites actually responded, not against however many 'found' hits
+        strict mode happened to filter out for LOW CONFIDENCE.
+
+        19 sites checked: 5 errored (26%), 10 found (all low-confidence,
+        dropped by strict mode), 4 not_found. Before this fix, err_count (5,
+        computed pre-filter) was compared against checked_after (post-filter
+        count, which drops to 9 once the 10 low-confidence hits are removed)
+        -- 5/9 > 50%, so the wrapper reported `unverified`
+        'majority_sites_errored' even though 14 of 19 sites (74%) responded
+        just fine. Confidence-filtering and response-failure are independent
+        axes; one must not manufacture the other.
+        """
+        monkeypatch.setattr(
+            t, "_get_site_confidences",
+            lambda u: {f"Low{i}": 0.05 for i in range(10)},
+        )
+        results = (
+            [{"status": "error"}] * 5
+            + [{"status": "found", "site": f"Low{i}"} for i in range(10)]
+            + [{"status": "not_found"}] * 4
+        )
+        env = t.wrap_username_scan(
+            {"sites_checked": 19, "sites_found": 10, "results": results},
+            username="someone",
+            strict=True,
+        )
+        trust = env["trust"]
+        assert trust["extra"]["filtered_low_confidence"] == 10
+        assert "majority_sites_errored" not in trust["warnings"], (
+            f"5/19 (26%) errored is not a majority, but strict-mode filtering "
+            f"shrank the denominator and manufactured one. verdict={trust['verdict']!r} "
+            f"reasoning={trust['reasoning']!r}"
+        )
+        assert trust["verdict"] != t.UNVERIFIED
+
     def test_strict_mode_without_history_is_noop(self, monkeypatch):
         """If there is no history data, strict mode cannot filter anything
         and must fall through gracefully without erasing hits."""
@@ -378,6 +417,19 @@ class TestPhoneWrapper:
         })
         warns = env["trust"]["warnings"]
         assert "install_phonenumbers_for_better_data" in warns
+
+    def test_non_dict_parsed_field_does_not_crash(self):
+        """`parsed = raw.get("parsed", {}) or {}` guarded against the field
+        being absent, not against it being a non-dict truthy value."""
+        env = t.wrap_phone({"parsed": "error: could not parse"})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
+    def test_non_dict_reverse_lookup_field_does_not_crash(self):
+        env = t.wrap_phone({
+            "parsed": {"valid": True, "enrichment_source": "libphonenumber"},
+            "reverse_lookup": "error: timeout",
+        })
+        assert env["trust"]["verdict"] in (t.HEURISTIC, t.INFERRED)
 
 
 class TestEmailWrapper:
@@ -567,6 +619,50 @@ class TestEmailWrapper:
         assert extra["dmarc_present"] is True
         assert extra["dmarc_policy"] == "quarantine"
 
+    def test_non_dict_validation_field_does_not_crash(self):
+        """`validation = raw.get("validation", {}) or {}` guarded against
+        the field being absent, not against it being a non-dict truthy
+        value (e.g. a string error from a malformed adapter payload)."""
+        env = t.wrap_email({"validation": "error: connection reset"})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
+    def test_non_dict_spf_dmarc_role_account_do_not_crash(self):
+        env = t.wrap_email({
+            "validation": {
+                "format_valid": True, "mx_reachable": True,
+                "spf": "error", "dmarc": ["error"], "role_account": 1,
+            },
+        })
+        assert env["trust"]["verdict"] == t.HEURISTIC
+
+    def test_non_numeric_services_found_does_not_crash(self):
+        """The whole library's contract is 'never raise, report instead' --
+        explicit for validate_envelope, implicit everywhere else via the
+        pervasive .get(..., default) + bool()/isinstance() coercion used on
+        every other field. services_found was the one field coerced with a
+        bare int(), which raises ValueError on a malformed adapter payload
+        (e.g. a scraper that put an error string where a count belongs)
+        instead of degrading gracefully like every other field in this
+        wrapper."""
+        env = t.wrap_email({
+            "validation": {"format_valid": True, "mx_reachable": True},
+            "services_found": "unknown",
+        })
+        assert env["trust"]["extra"]["services_found"] == 0
+
+    def test_non_string_dmarc_policy_does_not_crash(self):
+        """dmarc_policy is built with `(dmarc.get("policy") or "").lower()`
+        -- a non-string truthy value (int, list, dict from a malformed
+        adapter payload) has no .lower() and crashes with AttributeError,
+        the same class of bug as the bare int() above."""
+        env = t.wrap_email({
+            "validation": {
+                "format_valid": True, "mx_reachable": True,
+                "dmarc": {"present": True, "policy": 12345},
+            },
+        })
+        assert env["trust"]["extra"]["dmarc_policy"] == "12345"
+
 
 class TestIpWrapper:
     def test_all_sources_found_is_verified_high_confidence(self):
@@ -660,6 +756,17 @@ class TestIpWrapper:
         assert "dnsbl_listed:SORBS" in warns
         assert env["trust"]["extra"]["is_dnsbl_listed"] is True
         assert env["trust"]["extra"]["dnsbl_hits"] == ["Spamhaus ZEN", "SORBS"]
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """Every top-level sub-field here (`geolocation`, `rdap`,
+        `reverse_dns`, `tor`, `dnsbl`, `asn_classification`) was guarded
+        with `raw.get("key", {}) or {}`, which protects against the field
+        being absent, not against it being a non-dict truthy value."""
+        env = t.wrap_ip({
+            "geolocation": "error", "rdap": 5, "reverse_dns": ["a"],
+            "tor": "error", "dnsbl": 1, "asn_classification": "error",
+        })
+        assert env["trust"]["verdict"] == t.UNVERIFIED
 
     def test_dnsbl_clean_no_warnings(self):
         env = t.wrap_ip({
@@ -780,6 +887,35 @@ class TestDomainWrapper:
         assert 0.50 <= env["trust"]["confidence"] <= 0.80
         assert "only_one_source_responded" in env["trust"]["warnings"]
 
+    def test_non_numeric_ct_count_does_not_crash(self):
+        """Mirror of TestEmailWrapper's services_found test: ct_logs.count
+        was the one field in this wrapper coerced with a bare int(), which
+        raises ValueError on a malformed value instead of degrading
+        gracefully like every other field here."""
+        env = t.wrap_domain({
+            "dns": {"a_records": ["1.2.3.4"]},
+            "rdap": {"found": True},
+            "ssl": {"has_ssl": True},
+            "http": {"reachable": True},
+            "ct_logs": {"checked": True, "count": "unknown"},
+        })
+        assert env["trust"]["extra"]["ct_log_count"] == 0
+
+    def test_non_string_dmarc_policy_does_not_crash(self):
+        """Mirror of TestEmailWrapper's equivalent test: wrap_domain builds
+        its internal `dmarc_policy` the same unguarded way (extra.dmarc_policy
+        itself echoes the raw value unchanged, so this pins the internal
+        comparison logic -- e.g. dmarc_policy_none_no_enforcement -- instead
+        of crashing)."""
+        env = t.wrap_domain({
+            "dns": {"a_records": ["1.2.3.4"]},
+            "rdap": {"found": True},
+            "ssl": {"has_ssl": True},
+            "http": {"reachable": True},
+            "email_auth": {"dmarc": {"present": True, "policy": ["reject"]}},
+        })
+        assert env["trust"]["extra"]["dmarc_policy"] == ["reject"]
+
     # ── Tier-2 ──────────────────────────────────────────────────────────
 
     def test_dnssec_validated_boosts_confidence(self):
@@ -868,6 +1004,18 @@ class TestDomainWrapper:
             "http": {"reachable": True},
         })
         assert "registrar_data_may_be_privacy_redacted" in env["trust"]["warnings"]
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """Every top-level sub-field here (`rdap`, `ssl`, `http`, `dns`,
+        `ct_logs`, `ct_alive`, `dnssec`, `email_auth`) was guarded with
+        `raw.get("key", {}) or {}`, which protects against the field being
+        absent, not against it being a non-dict truthy value."""
+        env = t.wrap_domain({
+            "rdap": "error", "ssl": 5, "http": ["a"], "dns": "error",
+            "ct_logs": 1, "ct_alive": "error", "dnssec": ["a"],
+            "email_auth": 5,
+        })
+        assert env["trust"]["verdict"] == t.UNVERIFIED
 
     def test_confidence_capped_at_096(self):
         # Base verified + DNSSEC + CT should still cap at 0.96
@@ -1146,6 +1294,44 @@ class TestBreachWrapper:
         assert no_email["trust"]["confidence"] == errored_email["trust"]["confidence"]
         assert no_email["trust"]["verdict"] == errored_email["trust"]["verdict"] == t.VERIFIED
 
+    def test_email_ok_password_errored_stays_verified_and_surfaces_error(self):
+        """Mirror of test_password_ok_email_errored_stays_verified_and_surfaces_error.
+
+        The CHANGELOG's [0.2.0] fix handled password-ok + email-errored, but
+        the symmetric case -- password_check ATTEMPTED but errored (not
+        skipped: there is no "skipped" state for the free k-anonymity
+        check), email_check fully ok -- still fell through to the generic
+        `INFERRED 0.55` branch, silently downgrading a genuinely verified
+        email check AND dropping the password error entirely."""
+        env = t.wrap_breach({
+            "password_check": {"checked": False, "error": "network_timeout"},
+            "email_check": {"checked": True},
+        })
+        assert env["trust"]["verdict"] == t.VERIFIED
+        assert env["trust"]["confidence"] == 0.93
+        assert "password_check_error: network_timeout" in env["trust"]["errors"]
+
+    def test_email_ok_password_errored_matches_no_password_check_confidence(self):
+        """The errored-password and no-password-at-all states must land on
+        the same confidence, mirroring the email-side regression test."""
+        no_password = t.wrap_breach({
+            "password_check": None,
+            "email_check": {"checked": True},
+        })
+        errored_password = t.wrap_breach({
+            "password_check": {"checked": False, "error": "rate_limited"},
+            "email_check": {"checked": True},
+        })
+        assert no_password["trust"]["confidence"] == errored_password["trust"]["confidence"]
+        assert no_password["trust"]["verdict"] == errored_password["trust"]["verdict"] == t.VERIFIED
+
+    def test_non_dict_subfields_do_not_crash(self):
+        """`pw_check`/`em_check` were guarded with `raw.get("key") or {}`,
+        which protects against the field being absent, not against it
+        being a non-dict truthy value."""
+        env = t.wrap_breach({"password_check": "error", "email_check": ["a"]})
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+
 
 class TestPipelineWrapper:
     def test_pipeline_verdict_equals_weakest_submodule(self):
@@ -1240,7 +1426,7 @@ class TestContextCapExtendedToOtherWrappers:
     _apply_context_cap() helper. Default (context=None) behavior must be
     byte-for-byte unchanged; these pin the new opt-in behavior."""
 
-    EMAIL_STRONG = {
+    EMAIL_STRONG: ClassVar = {
         "validation": {
             "format_valid": True, "mx_reachable": True,
             "mx_provider": "Google Workspace",
@@ -1248,15 +1434,15 @@ class TestContextCapExtendedToOtherWrappers:
         },
         "services_found": 2,
     }
-    IP_ALL_THREE = {
+    IP_ALL_THREE: ClassVar = {
         "geolocation": {"found": True}, "rdap": {"found": True},
         "reverse_dns": {"hostname": "a.b"},
     }
-    DOMAIN_ALL_FOUR = {
+    DOMAIN_ALL_FOUR: ClassVar = {
         "dns": {"a_records": ["1.2.3.4"]}, "rdap": {"found": True},
         "ssl": {"has_ssl": True}, "http": {"reachable": True},
     }
-    PHONE_STRONG = {
+    PHONE_STRONG: ClassVar = {
         "parsed": {"valid": True, "country_code": "+1", "enrichment_source": "libphonenumber"},
         "social_checks": [
             {"platform": "WhatsApp", "possible": True},
@@ -1318,3 +1504,18 @@ class TestContextCapExtendedToOtherWrappers:
         env = t.wrap_email({"validation": {"format_valid": False}}, context="gov")
         assert env["trust"]["verdict"] == t.UNVERIFIED
         assert env["trust"]["confidence"] == 0.05
+        assert "context:gov" in env["trust"]["warnings"]
+
+    def test_invalid_format_phone_still_tags_context(self):
+        """Mirror of the email test above: wrap_phone's own early-return
+        bad-format path was extended with `context` support in the same
+        CHANGELOG entry as wrap_email ("Deployment-context confidence cap
+        extended to wrap_email, wrap_phone, wrap_ip, wrap_domain"), but only
+        wrap_email's early return actually calls the context helper -- the
+        phone path never referenced `context` at all, so a caller in a
+        `gov`/`strict` deployment got an envelope indistinguishable from one
+        with no context specified."""
+        env = t.wrap_phone({"parsed": {"valid": False}}, context="gov")
+        assert env["trust"]["verdict"] == t.UNVERIFIED
+        assert env["trust"]["confidence"] == 0.05
+        assert "context:gov" in env["trust"]["warnings"]

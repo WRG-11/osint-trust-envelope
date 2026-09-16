@@ -103,6 +103,41 @@ def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Coerce a caller-supplied count field, never raising.
+
+    Every other field in this module is read with `.get(..., default)` plus
+    `bool()`/`isinstance()` coercion, which cannot raise on a malformed
+    adapter payload -- a scraper that put an error string or `None` where a
+    count belongs degrades to a falsy default instead of crashing the whole
+    wrapper. A bare `int(x)` on the same kind of field is the one place
+    that breaks that pattern: `int("unknown")` raises `ValueError`, and this
+    library's whole premise is that a wrapper never raises on bad input, it
+    reports.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    """Coerce a caller-supplied nested sub-field to a dict, never raising.
+
+    The dominant pattern in this module is ``raw.get("key", {}) or {}`` --
+    it guards against the field being ABSENT or falsy, but not against it
+    being PRESENT with the wrong type. A malformed adapter payload with
+    e.g. ``{"validation": "error: timeout"}`` (a string where a dict
+    belongs) sails past ``or {}`` unchanged (a non-empty string is truthy),
+    and the very next ``.get()`` call on it crashes with ``AttributeError``.
+
+    Six wrappers (company, ip, phone, email, domain, breach) had this exact
+    gap on their primary sub-fields -- found 2026-09-15 by systematically
+    passing a non-dict value for each wrapper's top-level nested field.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _enforce_band(
     verdict: str,
     confidence: float,
@@ -580,6 +615,15 @@ def wrap_username_scan(
     # {sites_checked, sites_found, results: [...]}.
     raw_results = [r for r in (raw.get("results") or []) if isinstance(r, dict)]
     err_count = sum(1 for r in raw_results if r.get("status") == "error")
+    # How many sites actually responded at all -- independent of strict
+    # mode's confidence filtering below, which only drops "found" hits for
+    # being low-confidence. A site that answered "found" but got filtered
+    # for low confidence still RESPONDED; it did not error, and using the
+    # post-filter count here would let strict-mode filtering manufacture a
+    # majority-error verdict out of a scan that mostly worked. See
+    # ``checked_after`` for the (deliberately different) post-filter count
+    # used for the confidence-ratio math and the reported extras.
+    responded_count = len(raw_results)
     parking_hits = sum(
         1 for r in raw_results
         if r.get("status") == "not_found" and "parking" in str(r.get("message", "")).lower()
@@ -625,11 +669,11 @@ def wrap_username_scan(
         verdict, conf = UNVERIFIED, 0.05
         warnings.append("no_sites_checked")
         reasoning.append("No sites reached - cannot form any verdict.")
-    elif err_count > checked_after * 0.5:
+    elif err_count > responded_count * 0.5:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("majority_sites_errored")
         reasoning.append(
-            f"{err_count}/{checked_after} sites errored - majority failure invalidates the scan."
+            f"{err_count}/{responded_count} sites errored - majority failure invalidates the scan."
         )
     elif found_after == 0:
         verdict, conf = INFERRED, 0.60
@@ -837,22 +881,22 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     """
     if not isinstance(raw, dict):
         raw = {}
-    validation = raw.get("validation", {}) or {}
+    validation = _safe_dict(raw.get("validation"))
     format_valid = bool(validation.get("format_valid"))
     mx_reachable = bool(validation.get("mx_reachable"))
     mx_records = validation.get("mx_records") or []
     mx_provider = validation.get("mx_provider")
-    spf = validation.get("spf") or {}
-    dmarc = validation.get("dmarc") or {}
-    role_account = validation.get("role_account") or {}
+    spf = _safe_dict(validation.get("spf"))
+    dmarc = _safe_dict(validation.get("dmarc"))
+    role_account = _safe_dict(validation.get("role_account"))
     disposable = bool(validation.get("disposable"))
     is_role = bool(role_account.get("is_role"))
-    services_found = int(raw.get("services_found", 0) or 0)
+    services_found = _safe_int(raw.get("services_found", 0) or 0)
 
     spf_present = bool(spf.get("present"))
     spf_all_qualifier = spf.get("all_qualifier")  # '+', '-', '~', '?'
     dmarc_present = bool(dmarc.get("present"))
-    dmarc_policy = (dmarc.get("policy") or "").lower()
+    dmarc_policy = str(dmarc.get("policy") or "").lower()
     dmarc_strict = dmarc_policy in ("quarantine", "reject")
 
     warnings: list[str] = []
@@ -878,8 +922,8 @@ def wrap_email(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 warnings=mandatory_warnings,
                 errors=errors,
                 reasoning=[
-                    "Address failed the RFC-5322 format check - no lookup was "
-                    "attempted, so this is 'no data', not 'no mailbox'.",
+                    ("Address failed the RFC-5322 format check - no lookup was "
+                    "attempted, so this is 'no data', not 'no mailbox'."),
                 ],
                 extra={
                     "format_valid": False,
@@ -1019,7 +1063,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     """
     if not isinstance(raw, dict):
         raw = {}
-    parsed = raw.get("parsed", {}) or {}
+    parsed = _safe_dict(raw.get("parsed"))
     valid_format = bool(parsed.get("valid"))
     enrichment_source = parsed.get("enrichment_source") or "regex"
     used_libphonenumber = enrichment_source == "libphonenumber"
@@ -1031,6 +1075,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
         verdict, conf = UNVERIFIED, 0.05
         errors.append("invalid_phone_format")
         warnings.append("number_did_not_parse")
+        _apply_context_cap(conf, context, warnings)
         return envelope(
             raw,
             build_trust(
@@ -1041,8 +1086,8 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
                 warnings=warnings,
                 errors=errors,
                 reasoning=[
-                    "The number did not parse - no enrichment was attempted, so "
-                    "this is 'unparseable input', not 'unused number'.",
+                    ("The number did not parse - no enrichment was attempted, so "
+                    "this is 'unparseable input', not 'unused number'."),
                 ],
                 extra={
                     "valid_format": False,
@@ -1091,7 +1136,7 @@ def wrap_phone(raw: dict[str, Any], *, context: str | None = None) -> dict[str, 
     # has a *current* carrier rather than the prefix's original allocation.
     # We still cap below the verified threshold because Numverify themselves
     # disclaim that it can be stale.
-    reverse = raw.get("reverse_lookup", {}) or {}
+    reverse = _safe_dict(raw.get("reverse_lookup"))
     if reverse.get("lookup_done"):
         verdict = INFERRED
         # Top of the inferred band (was a hardcoded 0.82, i.e. two points over
@@ -1186,12 +1231,12 @@ def wrap_ip(raw: dict[str, Any], *, context: str | None = None) -> dict[str, Any
     """
     if not isinstance(raw, dict):
         raw = {}
-    geo = raw.get("geolocation", {}) or {}
-    rdap = raw.get("rdap", {}) or {}
-    rdns = raw.get("reverse_dns", {}) or {}
-    tor = raw.get("tor", {}) or {}
-    dnsbl = raw.get("dnsbl", {}) or {}
-    asn = raw.get("asn_classification", {}) or {}
+    geo = _safe_dict(raw.get("geolocation"))
+    rdap = _safe_dict(raw.get("rdap"))
+    rdns = _safe_dict(raw.get("reverse_dns"))
+    tor = _safe_dict(raw.get("tor"))
+    dnsbl = _safe_dict(raw.get("dnsbl"))
+    asn = _safe_dict(raw.get("asn_classification"))
 
     geo_found = bool(geo.get("found"))
     rdap_found = bool(rdap.get("found"))
@@ -1333,16 +1378,16 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
     """
     if not isinstance(raw, dict):
         raw = {}
-    rdap = raw.get("rdap", {}) or {}
-    ssl = raw.get("ssl", {}) or {}
-    http = raw.get("http", {}) or {}
-    dns = raw.get("dns", {}) or {}
-    ct = raw.get("ct_logs", {}) or {}
-    ct_alive = raw.get("ct_alive", {}) or {}
-    dnssec = raw.get("dnssec", {}) or {}
-    auth = raw.get("email_auth", {}) or {}
-    spf = (auth.get("spf") or {}) if isinstance(auth, dict) else {}
-    dmarc = (auth.get("dmarc") or {}) if isinstance(auth, dict) else {}
+    rdap = _safe_dict(raw.get("rdap"))
+    ssl = _safe_dict(raw.get("ssl"))
+    http = _safe_dict(raw.get("http"))
+    dns = _safe_dict(raw.get("dns"))
+    ct = _safe_dict(raw.get("ct_logs"))
+    ct_alive = _safe_dict(raw.get("ct_alive"))
+    dnssec = _safe_dict(raw.get("dnssec"))
+    auth = _safe_dict(raw.get("email_auth"))
+    spf = _safe_dict(auth.get("spf"))
+    dmarc = _safe_dict(auth.get("dmarc"))
 
     rdap_found = bool(rdap.get("found"))
     has_ssl = bool(ssl.get("has_ssl"))
@@ -1351,11 +1396,11 @@ def wrap_domain(raw: dict[str, Any], *, context: str | None = None) -> dict[str,
 
     dnssec_validated = bool(dnssec.get("validated"))
     dnssec_checked = bool(dnssec.get("checked"))
-    ct_count = int(ct.get("count") or 0)
+    ct_count = _safe_int(ct.get("count") or 0)
     ct_alive_count = len(ct_alive.get("alive") or [])
     spf_present = bool(spf.get("present"))
     dmarc_present = bool(dmarc.get("present"))
-    dmarc_policy = (dmarc.get("policy") or "").lower()
+    dmarc_policy = str(dmarc.get("policy") or "").lower()
 
     # Tier-2 SSL deep inspection signals
     ssl_protocol_class = ssl.get("protocol_class")
@@ -1519,8 +1564,8 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(raw, dict):
         raw = {}
-    pw_check = raw.get("password_check") or {}
-    em_check = raw.get("email_check") or {}
+    pw_check = _safe_dict(raw.get("password_check"))
+    em_check = _safe_dict(raw.get("email_check"))
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -1540,6 +1585,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
     # through to the same pw_ok branch below; the underlying error (if any)
     # is still surfaced rather than silently dropped.
     em_attempted_but_inconclusive = bool(em_check) and not em_ok and not em_skipped
+    # Mirror of the above for the password side. There is no "skipped" state
+    # for the password check -- the k-anonymity range query needs no paid
+    # key, so if it was requested at all it was attempted.
+    pw_attempted_but_inconclusive = bool(pw_check) and not pw_ok
 
     if pw_ok and em_ok:
         verdict, conf = VERIFIED, 0.97
@@ -1550,8 +1599,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
         verdict, conf = VERIFIED, 0.90
         if em_attempted_but_inconclusive and em_check.get("error"):
             errors.append(f"email_check_error: {em_check.get('error')}")
-    elif em_ok and not pw_check:
+    elif em_ok and (not pw_check or pw_attempted_but_inconclusive):
         verdict, conf = VERIFIED, 0.93
+        if pw_attempted_but_inconclusive and pw_check.get("error"):
+            errors.append(f"password_check_error: {pw_check.get('error')}")
     elif em_skipped and not pw_check:
         verdict, conf = UNVERIFIED, 0.15
         warnings.append("no_hibp_key_password_check_not_requested")
@@ -1570,6 +1621,10 @@ def wrap_breach(raw: dict[str, Any]) -> dict[str, Any]:
             "The HIBP k-anonymity password check completed - a cryptographic "
             "range query, not a heuristic, which is why this wrapper may reach "
             "verified at all.")
+    elif pw_attempted_but_inconclusive:
+        reasoning.append(
+            "The password check was attempted and did not conclude; it is "
+            "treated as no password data rather than as a negative.")
     else:
         reasoning.append("No password check completed.")
     if em_ok:
@@ -1641,8 +1696,8 @@ def wrap_avatar(raw: dict[str, Any]) -> dict[str, Any]:
                 "A profile image was served for at least one identifier."
                 if found_any else
                 "No identifier returned a profile image.",
-                "An image existing at an address says nothing about who owns "
-                "it - correlation here is probabilistic, so the ceiling is inferred.",
+                ("An image existing at an address says nothing about who owns "
+                "it - correlation here is probabilistic, so the ceiling is inferred."),
             ],
             extra={"any_found": found_any},
         ),
@@ -1653,7 +1708,7 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
     """Company OSINT: GitHub org is real API, social checks are 404-based."""
     if not isinstance(raw, dict):
         raw = {}
-    github = raw.get("github", {}) or raw.get("github_org", {}) or {}
+    github = _safe_dict(raw.get("github")) or _safe_dict(raw.get("github_org"))
     gh_found = bool(github.get("found") or github.get("login"))
 
     warnings: list[str] = []
@@ -1664,16 +1719,16 @@ def wrap_company(raw: dict[str, Any]) -> dict[str, Any]:
         warnings.append("github_verified_social_heuristic")
         reasoning = [
             "The GitHub org resolved through the real API - an authoritative hit.",
-            "The social-presence half is still 404-scraped, so the weaker half "
-            "sets the ceiling for the pair.",
+            ("The social-presence half is still 404-scraped, so the weaker half "
+            "sets the ceiling for the pair."),
         ]
     elif raw.get("domain"):
         verdict, conf = HEURISTIC, 0.40
         warnings.append("no_github_org_social_presence_inferred_from_404")
         reasoning = [
             "No GitHub org; only a domain was supplied.",
-            "Everything left rests on 404-based social scraping, where false "
-            "positives are expected.",
+            ("Everything left rests on 404-based social scraping, where false "
+            "positives are expected."),
         ]
     else:
         verdict, conf = UNVERIFIED, 0.15
@@ -1711,10 +1766,10 @@ def wrap_name(raw: dict[str, Any]) -> dict[str, Any]:
                 "feed_to_username_scan_for_verification",
             ],
             reasoning=[
-                "Nothing was looked up: this wrapper only expands a name into "
-                "candidate handles from local pattern tables.",
-                "The candidates are input for a scan, not findings - treating "
-                "them as results would be inventing evidence.",
+                ("Nothing was looked up: this wrapper only expands a name into "
+                "candidate handles from local pattern tables."),
+                ("The candidates are input for a scan, not findings - treating "
+                "them as results would be inventing evidence."),
             ],
         ),
     )
@@ -1734,10 +1789,10 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
                 method="rdap_http_api",
                 source="rdap.org",
                 reasoning=[
-                    "RDAP answered over its real HTTP API - registry data, not "
-                    "an inference.",
-                    "Registrant contact fields are frequently privacy-redacted, "
-                    "so 'authoritative' covers the registration, not the person.",
+                    ("RDAP answered over its real HTTP API - registry data, not "
+                    "an inference."),
+                    ("Registrant contact fields are frequently privacy-redacted, "
+                    "so 'authoritative' covers the registration, not the person."),
                 ],
             ),
         )
@@ -1750,8 +1805,8 @@ def wrap_whois(raw: dict[str, Any]) -> dict[str, Any]:
             source="rdap.org",
             warnings=["rdap_lookup_failed"],
             reasoning=[
-                "RDAP returned nothing usable - the honest state is 'no data', "
-                "which is not evidence the domain is unregistered.",
+                ("RDAP returned nothing usable - the honest state is 'no data', "
+                "which is not evidence the domain is unregistered."),
             ],
         ),
     )
@@ -1771,11 +1826,11 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
                 method="ssl_socket_handshake",
                 source="direct TLS handshake",
                 reasoning=[
-                    "A TLS handshake completed and the peer presented a "
+                    ("A TLS handshake completed and the peer presented a "
                     "certificate - directly observed, not reported by a third "
-                    "party.",
-                    "The certificate is authoritative for what it attests; it "
-                    "says nothing about who operates the host.",
+                    "party."),
+                    ("The certificate is authoritative for what it attests; it "
+                    "says nothing about who operates the host."),
                 ],
             ),
         )
@@ -1788,8 +1843,8 @@ def wrap_ssl(raw: dict[str, Any]) -> dict[str, Any]:
             source="direct TLS handshake",
             warnings=["ssl_handshake_failed_or_no_cert"],
             reasoning=[
-                "No handshake and no certificate - the host may be reachable "
-                "without TLS, or not reachable at all; this cannot tell them apart.",
+                ("No handshake and no certificate - the host may be reachable "
+                "without TLS, or not reachable at all; this cannot tell them apart."),
             ],
         ),
     )
@@ -1816,8 +1871,8 @@ def wrap_paste(raw: dict[str, Any]) -> dict[str, Any]:
         if count else
         "No source returned a hit - absence here is weak, since these indexes "
         "are partial by nature.",
-        "A string appearing in a paste is not attribution; every hit needs a "
-        "human relevance call, which is why the ceiling is inferred.",
+        ("A string appearing in a paste is not attribution; every hit needs a "
+        "human relevance call, which is why the ceiling is inferred."),
     ]
 
     return envelope(
@@ -1849,11 +1904,11 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
                 source="local filesystem",
                 warnings=["exif_can_be_spoofed_or_stripped"],
                 reasoning=[
-                    "Parsed from the file on disk - deterministic, repeatable, "
+                    ("Parsed from the file on disk - deterministic, repeatable, "
                     "and dependent on no third party, which is why a local read "
-                    "outranks every networked wrapper here.",
-                    "Authoritative for what the file CLAIMS: EXIF can be edited "
-                    "or stripped before the file ever reached you.",
+                    "outranks every networked wrapper here."),
+                    ("Authoritative for what the file CLAIMS: EXIF can be edited "
+                    "or stripped before the file ever reached you."),
                 ],
             ),
         )
@@ -1866,8 +1921,8 @@ def wrap_metadata(raw: dict[str, Any]) -> dict[str, Any]:
             source="local filesystem",
             errors=[raw.get("error", "no_metadata_extracted")] if raw.get("error") else [],
             reasoning=[
-                "Nothing was extracted - either the format carries no metadata "
-                "or it was stripped; this cannot distinguish the two.",
+                ("Nothing was extracted - either the format carries no metadata "
+                "or it was stripped; this cannot distinguish the two."),
             ],
         ),
     )
@@ -1890,9 +1945,9 @@ def wrap_generic(
             source=source,
             warnings=warnings or [],
             reasoning=[
-                f"No dedicated wrapper covers this source, so the verdict is "
+                (f"No dedicated wrapper covers this source, so the verdict is "
                 f"whatever the caller asserted ({verdict}) rather than anything "
-                f"this package derived.",
+                f"this package derived."),
             ],
         ),
     )
@@ -1972,16 +2027,16 @@ def wrap_pipeline(raw: dict[str, Any]) -> dict[str, Any]:
 
     if weakest_module is None:
         reasoning = [
-            "No sub-module produced a result, so the pipeline has nothing to "
-            "aggregate - 'unverified' here means empty, not negative.",
+            ("No sub-module produced a result, so the pipeline has nothing to "
+            "aggregate - 'unverified' here means empty, not negative."),
         ]
     else:
         reasoning = [
             f"{len(sub_results)} sub-module(s) ran: "
             + ", ".join(f"{n}={v} {c}" for n, v, c in sub_results) + ".",
-            f"'{weakest_module}' is the weak link at {overall} {conf} and sets "
+            (f"'{weakest_module}' is the weak link at {overall} {conf} and sets "
             f"the aggregate - a chain is worth its weakest evidence, so "
-            f"strengthening any other module will not move this number.",
+            f"strengthening any other module will not move this number."),
         ]
         if unmapped:
             reasoning.append(

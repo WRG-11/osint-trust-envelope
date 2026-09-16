@@ -7,6 +7,126 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > **Versioning note:** the `[0.1.0]` entry below is seeded from the repository
 > history rather than from a tagged release.
 
+## [Unreleased]
+
+### Fixed
+
+- **Systemic crash class, six wrappers**: `wrap_company`, `wrap_ip`,
+  `wrap_phone`, `wrap_email`, `wrap_domain`, and `wrap_breach` all extract
+  their primary nested sub-fields with the pattern `raw.get("key", {}) or
+  {}`. That guards against the field being absent or falsy, but not
+  against it being *present with the wrong type* -- a string, list, or
+  int where a dict belongs (e.g. an adapter that put an error message in
+  `{"validation": "error: timeout"}` instead of the expected shape). The
+  next `.get()` call on that value crashes with `AttributeError`,
+  defeating the entire point of a library whose job is to be the
+  always-answers, never-crashes layer over messy real-world OSINT adapter
+  output. Found by systematically passing a non-dict value for every
+  wrapper's top-level nested field(s) -- 6 of 15 wrappers crashed, 9 did
+  not (they already used `isinstance()` guards for other reasons). Added
+  `_safe_dict(value) -> dict` (returns `{}` for anything that is not
+  already a dict) and used it at all ~20 affected call sites across the
+  six wrappers. Added one crash-safety regression test per wrapper (eight
+  total -- two wrappers have more than one affected field). Mutation-
+  checked as a batch: temporarily made `_safe_dict` an identity function,
+  confirmed all eight new tests fail with the exact `AttributeError`
+  above, restored.
+
+- `wrap_email`'s `services_found` and `wrap_domain`'s `ct_logs.count` were
+  the only two fields in the whole module coerced with a bare `int(...)`
+  -- every other field is read with `.get(..., default)` plus
+  `bool()`/`isinstance()` coercion, which cannot raise on a malformed
+  adapter payload. A caller passing a non-numeric value in either field
+  (e.g. a scraper that put an error string where a count belongs) crashed
+  the wrapper with an uncaught `ValueError`, contradicting this library's
+  own explicit "never raise, report instead" contract (stated for
+  `validate_envelope`, implicit everywhere else via the pervasive
+  defensive-coercion pattern). Added `_safe_int()` (falls back to a
+  default on `TypeError`/`ValueError`) and used it in both places.
+- Same crash class, same two wrappers: `dmarc_policy = (dmarc.get("policy")
+  or "").lower()` crashes with `AttributeError` if `policy` is a non-string
+  truthy value (int, list, dict) -- `.lower()` does not exist on those
+  types. Guarded with `str(...)` first in both `wrap_email` and
+  `wrap_domain`.
+
+- `wrap_phone`'s invalid-format early return never referenced its own
+  `context` parameter at all -- unlike `wrap_email`'s equivalent early
+  return, which calls `_apply_context_cap` purely for the warning tag
+  (the confidence, 0.05, is already below every context's cap, so nothing
+  clamps). Both wrappers gained `context` support in the same CHANGELOG
+  entry ("Deployment-context confidence cap extended to wrap_email,
+  wrap_phone, wrap_ip, wrap_domain"), but only email's early return got
+  the treatment. A caller in a `gov`/`strict` deployment scanning an
+  invalid phone number got an envelope indistinguishable from one with no
+  context specified at all -- no `context:gov` warning, nothing to show
+  which policy was supposedly in effect. `wrap_ip` and `wrap_domain` have
+  no true early return (their all-zero-sources case still flows to the
+  shared `_apply_context_cap` call at the end of the function), so this
+  was specific to the two wrappers with a `return` inside their bad-input
+  branch.
+
+### Added
+
+- CI: lint step (`ruff check .`), `ruff` added to the `dev` extra. Nothing
+  in CI previously checked code style/common mistakes beyond `mypy
+  --strict`'s type-only view. Currently clean (0 findings) -- this is a
+  gate against future drift, not a response to an existing problem.
+
+### Fixed
+
+- `wrap_breach`: the `[0.2.0]` fix below handled `password_check` ok +
+  `email_check` attempted-but-errored (surfacing the error, staying
+  `VERIFIED`). The mirror case -- `password_check` attempted but errored
+  (there is no "skipped" state for the free k-anonymity check; if it was
+  requested, it was attempted) + `email_check` fully ok -- still fell
+  through to the generic `INFERRED 0.55` branch, silently downgrading a
+  genuinely verified email check AND dropping the password error entirely.
+  Reproduced: `wrap_breach({"password_check": {"checked": False, "error":
+  "network_timeout"}, "email_check": {"checked": True}})` returned
+  `inferred 0.55` with `errors == []` and a reasoning bullet claiming
+  "No password check completed" -- factually wrong; a check WAS attempted,
+  it errored. Added the symmetric `pw_attempted_but_inconclusive` branch
+  (mirroring `em_attempted_but_inconclusive`): now returns `VERIFIED 0.93`
+  with `"password_check_error: network_timeout"` surfaced in `errors`, and
+  the reasoning bullet correctly distinguishes "attempted and inconclusive"
+  from "not requested at all". Found by chasing a coverage gap left over
+  from the `[0.2.0]` fix -- the async-error branch this fix closes was
+  untested, and the CHANGELOG entry for the direction that WAS fixed did
+  not mention checking its mirror.
+
+- `wrap_username_scan`: when `strict=True` and a historical-confidence
+  provider is wired, the "majority of sites errored" check compared the
+  error count (computed *before* strict-mode filtering) against the site
+  count *after* strict mode dropped low-confidence "found" hits -- two
+  different denominators for the same ratio. Reproduced live: 19 sites
+  checked, only 5 (26%) actually errored, but with 10 low-confidence
+  "found" hits filtered out, the post-filter count dropped to 9 and
+  `5/9 > 50%` reported `unverified` with "5/9 sites errored - majority
+  failure invalidates the scan" -- even though 14 of 19 sites (74%)
+  responded fine. Confidence-filtering and response-failure are
+  independent axes; one must not manufacture the other. The majority-error
+  check now uses a `responded_count` computed before strict-mode filtering;
+  the post-filter `checked_after`/`found_after` counts are unchanged for
+  everything else (the confidence-ratio math and the reported `extra`
+  fields), matching this file's existing "Recompute counts AFTER strict
+  filter so the UI sees consistent numbers" design.
+- `__init__.py`'s `__version__` was `"0.1.1"`, one release behind
+  `pyproject.toml`/`CITATION.cff`'s `0.2.0` (tagged 2026-09-05) -- the exact
+  bug class the `[0.1.1]` entry below already fixed once (`0.1.0` ->
+  `0.1.1`), recurred unguarded for the next release. Synced to `0.2.0`.
+  Added `tests/test_version.py`, which reads `pyproject.toml` and
+  `CITATION.cff` with a regex (no `tomllib`, since this package supports
+  Python 3.10) and asserts both match `__version__` -- so this cannot
+  silently drift a third time.
+- `SECURITY.md`'s "Supported Versions" table said "Latest release on PyPI"
+  as if the package were already published there, contradicting the
+  README's own Status section ("not yet published to PyPI"). Reworded to
+  "Latest tagged GitHub release" with a note pointing at the README.
+- `.coveragerc`'s `fail_under` floor was still 80, its original
+  conservative-first-pass value; actual measured coverage is 94% (was 88%
+  at the `0.2.0` release per that entry below, drifted further since
+  without the floor being ratcheted). Raised to 90.
+
 ## [0.2.0] - 2026-09-05
 
 > **First tagged release.** `[0.1.0]` and `[0.1.1]` below were written

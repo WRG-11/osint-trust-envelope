@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import pytest
 
-from osint_trust_envelope import trust as t
-from osint_trust_envelope import validate_envelope
-
 # The band grid is the canonical corpus of representative inputs. Importing it
 # rather than restating it keeps the two files from drifting apart -- a second
 # copy of a fixture set rots the same way a second copy of a guard does.
 from test_band_invariant import GRID, _public_wrappers
 
+from osint_trust_envelope import trust as t
+from osint_trust_envelope import validate_envelope
 
 # ── validate_envelope: real output is clean ─────────────────────────────────
 
@@ -116,6 +115,17 @@ def test_a_bool_confidence_is_not_mistaken_for_a_number() -> None:
         "verdict": t.VERIFIED, "confidence": True, "method": "m",
         "source": "s", "warnings": [], "errors": [], "reasoning": []}}
     assert any("expected a number" in p for p in validate_envelope(env))
+
+
+@pytest.mark.parametrize("bad_conf", [1.5, -0.3])
+def test_a_confidence_outside_0_1_is_reported(bad_conf: float) -> None:
+    """The 0.0-1.0 range check itself had no direct test -- only the bool
+    trap above did, which exercises a different code path (the isinstance
+    guard, not the range comparison)."""
+    env = {"result": {}, "trust": {
+        "verdict": t.VERIFIED, "confidence": bad_conf, "method": "m",
+        "source": "s", "warnings": [], "errors": [], "reasoning": []}}
+    assert any("outside 0.0-1.0" in p for p in validate_envelope(env))
 
 
 def test_it_does_not_judge_whether_the_verdict_is_the_right_one() -> None:
