@@ -11,8 +11,8 @@ authors:
   - name: "WRG-11"
 repository-code: "https://github.com/WRG-11/osint-trust-envelope"
 license: MIT
-version: 0.2.0
-date-released: "2026-09-05"
+version: 0.2.1
+date-released: "2026-09-25"
 keywords:
   - osint
   - threat-intelligence

@@ -9,6 +9,20 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-25
+
+Patch release: the result wrappers no longer crash on malformed adapter
+payloads, and `wrap_breach` and `wrap_username_scan` no longer return the
+wrong verdict for one specific input combination each. No change to the
+public API.
+
+### Added
+
+- CI: lint step (`ruff check .`), `ruff` added to the `dev` extra. Nothing
+  in CI previously checked code style/common mistakes beyond `mypy
+  --strict`'s type-only view. Currently clean (0 findings) -- this is a
+  gate against future drift, not a response to an existing problem.
+
 ### Fixed
 
 - **Systemic crash class, six wrappers**: `wrap_company`, `wrap_ip`,
@@ -65,15 +79,6 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   was specific to the two wrappers with a `return` inside their bad-input
   branch.
 
-### Added
-
-- CI: lint step (`ruff check .`), `ruff` added to the `dev` extra. Nothing
-  in CI previously checked code style/common mistakes beyond `mypy
-  --strict`'s type-only view. Currently clean (0 findings) -- this is a
-  gate against future drift, not a response to an existing problem.
-
-### Fixed
-
 - `wrap_breach`: the `[0.2.0]` fix below handled `password_check` ok +
   `email_check` attempted-but-errored (surfacing the error, staying
   `VERIFIED`). The mirror case -- `password_check` attempted but errored
@@ -126,6 +131,11 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   conservative-first-pass value; actual measured coverage is 94% (was 88%
   at the `0.2.0` release per that entry below, drifted further since
   without the floor being ratcheted). Raised to 90.
+
+### Maintenance
+
+- `CITATION.cff`, `.github/CODEOWNERS` and a pull request template (#27).
+- CodeQL actions updated to v4.38.1, still pinned to commit SHAs (#29, #30).
 
 ## [0.2.0] - 2026-09-05
 
