@@ -280,8 +280,7 @@ context can still report `verified`, just never above 0.70. Omitting
 ## Install
 
 ```bash
-pip install osint-trust-envelope        # once published
-# or, from a checkout:
+# Not on PyPI yet. From a checkout of this repository:
 pip install .
 ```
 
