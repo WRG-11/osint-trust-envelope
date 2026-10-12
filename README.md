@@ -4,22 +4,42 @@
 [![CodeQL](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/WRG-11/osint-trust-envelope/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/github/license/WRG-11/osint-trust-envelope)](https://github.com/WRG-11/osint-trust-envelope/blob/main/LICENSE)
 
-**Per-source-type epistemic ceilings for OSINT results - anti-overclaim as code.**
+A Python library that limits how confident an OSINT result is allowed to look, by source type.
 
-## Status
+The failure mode: a username "found" on 40 sites and a password confirmed against a
+breach corpus get the same green checkmark, although only one of them is strong evidence.
 
-Experimental — feature-complete and CI-tested with a zero-dependency core, but not yet published to PyPI, and the confidence anchors are hand-calibrated tradecraft heuristics rather than corpus-validated metrics (see [What this is not](#what-this-is-not)).
+What this does: it wraps each result in a `{"result": ..., "trust": ...}` envelope whose
+verdict cannot go above what that source type supports. The limit is in the code, not in
+the caller's discipline.
 
-OSINT tooling loves to render a green checkmark. A username "found" on 40 sites,
-a phone number "traced" to a carrier, an email "confirmed" - all presented with
-the same confident UI as a cryptographically real breach hit. The problem is
-that most OSINT signals *cannot* support that confidence, and the uncertainty
-usually lives only in a human analyst's head (or a footnote nobody reads).
+```bash
+git clone https://github.com/WRG-11/osint-trust-envelope && cd osint-trust-envelope
+python demo.py    # Python 3.10 or newer, nothing to install
+```
 
-This package moves that uncertainty into the type system of the result. Every
-lookup is wrapped in a `{"result": ..., "trust": ...}` envelope whose **verdict
-is capped at the highest level the source _type_ can honestly support** - and
-that cap is written into the code, not left to caller discipline.
+First of the demo's cases, as printed (the `reasoning` lines follow in the full output):
+
+```
+[1] Phone (+1, libphonenumber, 1 WhatsApp hit) - capped at inferred
+  verdict    : inferred
+  confidence : 0.66
+  warnings   :
+    - number_portability_not_reflected
+    - ownership_not_determinable_from_number_alone
+    - parsed_via_libphonenumber
+    - single_messenger_presence_only
+    - messenger_presence_hits=1
+```
+
+A phone result does not come back `verified`, whatever input you give it.
+[Per-source ceilings](#per-source-ceilings-and-why-they-exist) · [What this is not](#what-this-is-not)
+
+Status: experimental. No runtime dependencies. Not on PyPI yet. The library makes no
+network calls; you bring the raw result. The confidence numbers are hand-calibrated
+heuristics and have not been validated against a labelled corpus.
+
+## In code
 
 ```python
 from osint_trust_envelope import wrap_phone
@@ -34,9 +54,6 @@ env["trust"]["confidence"]   # -> 0.66
 env["trust"]["warnings"]     # -> ["number_portability_not_reflected",
                              #     "ownership_not_determinable_from_number_alone", ...]
 ```
-
-A phone number wrapper structurally **cannot** return `verified`, no matter how
-rich the input. That is the whole point.
 
 ---
 
@@ -280,8 +297,7 @@ context can still report `verified`, just never above 0.70. Omitting
 ## Install
 
 ```bash
-pip install osint-trust-envelope        # once published
-# or, from a checkout:
+# Not on PyPI yet. From a checkout of this repository:
 pip install .
 ```
 

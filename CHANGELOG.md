@@ -9,6 +9,17 @@ the package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The README opens with what the library does, the command that runs the demo
+  and the demo's first case as printed. The Python example moves under
+  "In code". The separate "Status" section is folded into the opening.
+
+### Added
+
+- `tests/test_readme_demo_sample.py` runs `demo.py` and fails when the README's
+  quoted output is not what the demo prints.
+
 ## [0.2.1] - 2026-09-25
 
 Patch release: the result wrappers no longer crash on malformed adapter
